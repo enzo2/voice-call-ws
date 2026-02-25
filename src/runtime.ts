@@ -1,6 +1,10 @@
 import type { CoreConfig } from "./core-bridge.js";
 import type { VoiceCallWsConfig } from "./config.js";
-import { validateVoiceCallWsConfig } from "./config.js";
+import {
+  GeminiLiveConfigSchema,
+  XaiVoiceAgentConfigSchema,
+  validateVoiceCallWsConfig,
+} from "./config.js";
 import { CallManager } from "./manager.js";
 import type { TelephonyProvider } from "./providers/base.js";
 import { TwilioProvider } from "./providers/twilio.js";
@@ -62,11 +66,13 @@ function resolveRealtimeProvider(config: VoiceCallWsConfig): RealtimeProvider {
       config.realtime.gemini?.apiKey ??
       process.env.GEMINI_API_KEY ??
       process.env.GOOGLE_API_KEY;
-    return new GeminiLiveProvider(config.realtime.gemini ?? {}, apiKey);
+    const geminiConfig = GeminiLiveConfigSchema.parse(config.realtime.gemini ?? {});
+    return new GeminiLiveProvider(geminiConfig, apiKey);
   }
 
   const apiKey = config.realtime.xai?.apiKey ?? process.env.XAI_API_KEY;
-  return new XaiVoiceAgentProvider(config.realtime.xai ?? {}, apiKey);
+  const xaiConfig = XaiVoiceAgentConfigSchema.parse(config.realtime.xai ?? {});
+  return new XaiVoiceAgentProvider(xaiConfig, apiKey);
 }
 
 export async function createVoiceCallWsRuntime(params: {

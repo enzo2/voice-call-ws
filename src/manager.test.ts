@@ -120,7 +120,10 @@ describe("CallManager", () => {
     await manager.speakInitialMessage(providerCallId);
 
     expect(sent.length).toBe(1);
-    expect(sent[0]).toEqual({ callId: providerCallId, text: message });
+    expect(sent[0]).toEqual({
+      callId: providerCallId,
+      text: `Repeat the following text exactly, and nothing else: "${message}"`,
+    });
 
     const call = manager.getCall(callResult.callId);
     expect(call?.transcript[0]?.speaker).toBe("bot");

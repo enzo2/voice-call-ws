@@ -1,6 +1,6 @@
 # @clawdbot/voice-call-ws
 
-Voice Call WebSocket plugin for **Clawdbot**.
+Voice Call WebSocket extension for **OpenClaw**.
 
 Telephony:
 - **Twilio** (Programmable Voice + Media Streams)
@@ -10,15 +10,14 @@ Realtime providers:
 - **Gemini Live**
 - **Mock realtime** (local dev)
 
-Docs: `https://docs.clawd.bot/plugins/voice-call-ws`
-Plugin system: `https://docs.clawd.bot/plugin`
+Docs: Refer to your OpenClaw plugin/extension docs for this plugin's config and install path.
 
 ## Install (local dev)
 
-### Option A: install via Clawdbot (recommended)
+### Option A: install via OpenClaw (recommended)
 
 ```bash
-clawdbot plugins install @clawdbot/voice-call-ws
+openclaw plugins install @clawdbot/voice-call-ws
 ```
 
 Restart the Gateway afterwards.
@@ -86,13 +85,15 @@ Notes:
 
 ## CLI
 
+If your CLI binary is still named `clawdbot`, substitute it below.
+
 ```bash
-clawdbot voicecall-ws call --to "+15555550123" --message "Hello from Clawdbot"
-clawdbot voicecall-ws speak --call-id <id> --message "One moment"
-clawdbot voicecall-ws end --call-id <id>
-clawdbot voicecall-ws status --call-id <id>
-clawdbot voicecall-ws tail
-clawdbot voicecall-ws expose --mode funnel
+openclaw voicecall-ws call --to "+15555550123" --message "Hello from OpenClaw"
+openclaw voicecall-ws speak --call-id <id> --message "One moment"
+openclaw voicecall-ws end --call-id <id>
+openclaw voicecall-ws status --call-id <id>
+openclaw voicecall-ws tail
+openclaw voicecall-ws expose --mode funnel
 ```
 
 ## Tool
@@ -116,3 +117,10 @@ Actions:
 
 - WebSocket audio runs over Twilio Media Streams.
 - Realtime provider handles STT + TTS end-to-end.
+
+## Development
+
+```bash
+npm run test
+npm run build
+```

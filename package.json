@@ -3,10 +3,16 @@
   "version": "2026.1.23-1",
   "type": "module",
   "description": "Clawdbot voice-call-ws plugin",
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
   "dependencies": {
     "@alexanderolsen/libsamplerate-js": "2.1.2",
     "@google/genai": "1.34.0",
     "@sinclair/typebox": "0.34.47",
+    "commander": "^14.0.3",
     "ws": "^8.19.0",
     "zod": "^4.3.5"
   },
@@ -14,5 +20,11 @@
     "extensions": [
       "./index.ts"
     ]
+  },
+  "devDependencies": {
+    "@types/node": "^25.3.0",
+    "@types/ws": "^8.18.1",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.18"
   }
 }

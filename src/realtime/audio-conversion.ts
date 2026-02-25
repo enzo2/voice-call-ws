@@ -11,10 +11,12 @@ export type LibSampleRateInstance = {
   destroy: () => void;
 };
 
+type ConverterTypeEnum = (typeof ConverterType)[keyof typeof ConverterType];
+
 export async function createResampler(
   inputSampleRate: number,
   outputSampleRate: number,
-  options: { converterType?: ConverterType } = {},
+  options: { converterType?: ConverterTypeEnum } = {},
 ): Promise<LibSampleRateInstance> {
   const resampler = await create(1, inputSampleRate, outputSampleRate, {
     converterType: options.converterType ?? ConverterType.SRC_SINC_FASTEST,

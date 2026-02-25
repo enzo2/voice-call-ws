@@ -50,6 +50,7 @@ export class VoiceCallAgent {
       coreConfig: CoreConfig;
       logger?: Logger;
       manager?: CallManager;
+      loadDeps?: typeof loadCoreAgentDeps;
     },
   ) {}
 
@@ -163,7 +164,8 @@ export class VoiceCallAgent {
 
   private async getDeps() {
     if (!this.depsPromise) {
-      this.depsPromise = loadCoreAgentDeps();
+      const loader = this.params.loadDeps ?? loadCoreAgentDeps;
+      this.depsPromise = loader();
     }
     return this.depsPromise;
   }
