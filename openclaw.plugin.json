@@ -1,0 +1,375 @@
+{
+  "id": "voice-call-ws",
+  "name": "Voice Call WS",
+  "description": "Twilio Media Streams + realtime speech-to-speech providers.",
+  "uiHints": {
+    "telephony.provider": {
+      "label": "Telephony Provider"
+    },
+    "telephony.twilio.accountSid": {
+      "label": "Twilio Account SID"
+    },
+    "telephony.twilio.authToken": {
+      "label": "Twilio Auth Token",
+      "sensitive": true
+    },
+    "fromNumber": {
+      "label": "From Number",
+      "placeholder": "+15550001234"
+    },
+    "toNumber": {
+      "label": "Default To Number",
+      "placeholder": "+15550001234"
+    },
+    "inboundPolicy": {
+      "label": "Inbound Policy"
+    },
+    "allowFrom": {
+      "label": "Inbound Allowlist"
+    },
+    "inboundGreeting": {
+      "label": "Inbound Greeting",
+      "advanced": true
+    },
+    "outbound.defaultMode": {
+      "label": "Default Call Mode"
+    },
+    "outbound.notifyHangupDelaySec": {
+      "label": "Notify Hangup Delay (sec)",
+      "advanced": true
+    },
+    "serve.port": {
+      "label": "Webhook Port"
+    },
+    "serve.bind": {
+      "label": "Webhook Bind"
+    },
+    "serve.path": {
+      "label": "Webhook Path"
+    },
+    "realtime.provider": {
+      "label": "Realtime Provider"
+    },
+    "realtime.streamPath": {
+      "label": "Media Stream Path",
+      "advanced": true
+    },
+    "realtime.xai.apiKey": {
+      "label": "xAI API Key",
+      "sensitive": true
+    },
+    "realtime.xai.voice": {
+      "label": "xAI Voice",
+      "advanced": true
+    },
+    "realtime.xai.vadThreshold": {
+      "label": "xAI VAD Threshold",
+      "advanced": true
+    },
+    "tools.profile": {
+      "label": "Voice Tool Profile",
+      "advanced": true
+    },
+    "tools.allow": {
+      "label": "Voice Tool Allowlist",
+      "advanced": true
+    },
+    "tools.deny": {
+      "label": "Voice Tool Denylist",
+      "advanced": true
+    },
+    "tailscale.mode": {
+      "label": "Tailscale Mode",
+      "advanced": true
+    },
+    "tailscale.path": {
+      "label": "Tailscale Path",
+      "advanced": true
+    },
+    "tunnel.provider": {
+      "label": "Tunnel Provider",
+      "advanced": true
+    },
+    "tunnel.ngrokAuthToken": {
+      "label": "ngrok Auth Token",
+      "sensitive": true,
+      "advanced": true
+    },
+    "tunnel.ngrokDomain": {
+      "label": "ngrok Domain",
+      "advanced": true
+    },
+    "tunnel.allowNgrokFreeTier": {
+      "label": "Allow ngrok Free Tier",
+      "advanced": true
+    },
+    "publicUrl": {
+      "label": "Public Webhook URL",
+      "advanced": true
+    },
+    "skipSignatureVerification": {
+      "label": "Skip Signature Verification",
+      "advanced": true
+    },
+    "store": {
+      "label": "Call Log Store Path",
+      "advanced": true
+    }
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "enabled": {
+        "type": "boolean"
+      },
+      "telephony": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "provider": {
+            "type": "string",
+            "enum": [
+              "twilio"
+            ]
+          },
+          "twilio": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "accountSid": {
+                "type": "string"
+              },
+              "authToken": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      },
+      "fromNumber": {
+        "type": "string",
+        "pattern": "^\\+[1-9]\\d{1,14}$"
+      },
+      "toNumber": {
+        "type": "string",
+        "pattern": "^\\+[1-9]\\d{1,14}$"
+      },
+      "inboundPolicy": {
+        "type": "string",
+        "enum": [
+          "disabled",
+          "allowlist",
+          "pairing",
+          "open"
+        ]
+      },
+      "allowFrom": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "pattern": "^\\+[1-9]\\d{1,14}$"
+        }
+      },
+      "inboundGreeting": {
+        "type": "string"
+      },
+      "outbound": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "defaultMode": {
+            "type": "string",
+            "enum": [
+              "notify",
+              "conversation"
+            ]
+          },
+          "notifyHangupDelaySec": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "maxDurationSeconds": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "transcriptTimeoutMs": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "ringTimeoutMs": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "maxConcurrentCalls": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "serve": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "port": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "bind": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          }
+        }
+      },
+      "tailscale": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "off",
+              "serve",
+              "funnel"
+            ]
+          },
+          "path": {
+            "type": "string"
+          }
+        }
+      },
+      "tunnel": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "provider": {
+            "type": "string",
+            "enum": [
+              "none",
+              "ngrok",
+              "tailscale-serve",
+              "tailscale-funnel"
+            ]
+          },
+          "ngrokAuthToken": {
+            "type": "string"
+          },
+          "ngrokDomain": {
+            "type": "string"
+          },
+          "allowNgrokFreeTier": {
+            "type": "boolean"
+          }
+        }
+      },
+      "realtime": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "provider": {
+            "type": "string",
+            "enum": [
+              "xai-voice-agent",
+              "gemini-live",
+              "mock"
+            ]
+          },
+          "streamPath": {
+            "type": "string"
+          },
+          "xai": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "apiKey": {
+                "type": "string"
+              },
+              "voice": {
+                "type": "string",
+                "enum": [
+                  "Ara",
+                  "Rex",
+                  "Sal",
+                  "Eve",
+                  "Leo"
+                ]
+              },
+              "vadThreshold": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              }
+            }
+          },
+          "gemini": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "apiKey": {
+                "type": "string"
+              },
+              "model": {
+                "type": "string"
+              },
+              "voice": {
+                "type": "string"
+              },
+              "inputTranscription": {
+                "type": "boolean"
+              },
+              "outputTranscription": {
+                "type": "boolean"
+              }
+            }
+          },
+          "mock": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "enabled": {
+                "type": "boolean"
+              }
+            }
+          }
+        }
+      },
+      "publicUrl": {
+        "type": "string"
+      },
+      "tools": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "type": "string",
+            "enum": [
+              "minimal",
+              "messaging",
+              "full"
+            ]
+          },
+          "allow": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "deny": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "skipSignatureVerification": {
+        "type": "boolean"
+      },
+      "store": {
+        "type": "string"
+      }
+    }
+  }
+}
