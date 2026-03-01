@@ -133,6 +133,8 @@ export class GeminiLiveProvider implements RealtimeProvider {
     | null = null;
   private onAudioCallback: ((callId: string, audioData: Buffer) => void) | null =
     null;
+  private onOutputTranscriptCallback: ((callId: string, transcript: string) => void) | null =
+    null;
   private onErrorCallback: ((callId: string, error: string) => void) | null =
     null;
   private onFunctionCallCallback:
@@ -260,6 +262,10 @@ export class GeminiLiveProvider implements RealtimeProvider {
     this.onPartialTranscriptCallback = callback;
   }
 
+  onOutputTranscript(callback: (callId: string, transcript: string) => void): void {
+    this.onOutputTranscriptCallback = callback;
+  }
+
   onAudio(callback: (callId: string, audioData: Buffer) => void): void {
     this.onAudioCallback = callback;
   }
@@ -320,6 +326,11 @@ export class GeminiLiveProvider implements RealtimeProvider {
     this.handleToolCalls(session, message);
 
     const transcript = this.extractInputTranscript(message);
+
+    const outputTranscript = this.extractOutputTranscript(message);
+    if (outputTranscript) {
+      this.onOutputTranscriptCallback?.(session.callId, outputTranscript);
+    }
     if (transcript) {
       this.onTranscriptCallback?.(session.callId, transcript);
       this.onPartialTranscriptCallback?.(session.callId, transcript);
@@ -371,15 +382,19 @@ export class GeminiLiveProvider implements RealtimeProvider {
     return text ? text : null;
   }
 
+  private extractOutputTranscript(message: GeminiServerMessage): string | null {
+    const serverContent = message.serverContent ?? message.server_content;
+    const transcription =
+      serverContent?.outputTranscription ??
+      serverContent?.output_transcription ??
+      message.outputTranscription;
+
+    const text = transcription?.text?.trim();
+    return text ? text : null;
+  }
+
   private extractAudioChunks(message: GeminiServerMessage): Buffer[] {
     const chunks: Buffer[] = [];
-
-    if (typeof message.data === "string") {
-      chunks.push(Buffer.from(message.data, "base64"));
-    } else if (message.data instanceof Uint8Array) {
-      chunks.push(Buffer.from(message.data));
-    }
-
     const serverContent = message.serverContent ?? message.server_content;
     const modelTurn = serverContent?.modelTurn ?? serverContent?.model_turn;
     const parts = modelTurn?.parts ?? [];
@@ -392,6 +407,16 @@ export class GeminiLiveProvider implements RealtimeProvider {
       } else {
         chunks.push(Buffer.from(inline.data));
       }
+    }
+
+    if (chunks.length > 0) {
+      return chunks;
+    }
+
+    if (typeof message.data === "string") {
+      chunks.push(Buffer.from(message.data, "base64"));
+    } else if (message.data instanceof Uint8Array) {
+      chunks.push(Buffer.from(message.data));
     }
 
     return chunks;
@@ -437,7 +462,7 @@ export class GeminiLiveProvider implements RealtimeProvider {
     };
 
     if (options?.instructions) {
-      config.systemInstruction = options.instructions;
+      config.systemInstruction = { parts: [{ text: options.instructions }] };
     }
 
     if (this.voice) {

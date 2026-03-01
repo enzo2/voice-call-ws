@@ -25,6 +25,9 @@ export class MockRealtimeProvider implements RealtimeProvider {
   private onPartialTranscriptCallback:
     | ((callId: string, partial: string) => void)
     | null = null;
+  private onOutputTranscriptCallback:
+    | ((callId: string, transcript: string) => void)
+    | null = null;
   private onAudioCallback: ((callId: string, audioData: Buffer) => void) | null =
     null;
   private onErrorCallback: ((callId: string, error: string) => void) | null =
@@ -63,11 +66,12 @@ export class MockRealtimeProvider implements RealtimeProvider {
     }, this.transcriptDelayMs);
   }
 
-  async sendText(callId: string, _text: string): Promise<void> {
+  async sendText(callId: string, text: string): Promise<void> {
     const session = this.sessions.get(callId);
     if (!session?.connected) return;
 
     setTimeout(() => {
+      this.onOutputTranscriptCallback?.(callId, text);
       const audioData = Buffer.alloc(160, 0xff);
       this.onAudioCallback?.(callId, audioData);
     }, this.audioDelayMs);
@@ -79,9 +83,20 @@ export class MockRealtimeProvider implements RealtimeProvider {
 
     // Simulate audio generation triggered by system prompt/tools
     setTimeout(() => {
+      this.onOutputTranscriptCallback?.(
+        callId,
+        this.fixedTranscript ?? "(mock response)",
+      );
       const audioData = Buffer.alloc(160, 0xff);
       this.onAudioCallback?.(callId, audioData);
     }, this.audioDelayMs);
+  }
+
+
+  triggerAudio(callId: string, audioData: Buffer): void {
+    const session = this.sessions.get(callId);
+    if (!session?.connected) return;
+    this.onAudioCallback?.(callId, audioData);
   }
 
   onTranscript(callback: (callId: string, transcript: string) => void): void {
@@ -92,6 +107,10 @@ export class MockRealtimeProvider implements RealtimeProvider {
     callback: (callId: string, partial: string) => void,
   ): void {
     this.onPartialTranscriptCallback = callback;
+  }
+
+  onOutputTranscript(callback: (callId: string, transcript: string) => void): void {
+    this.onOutputTranscriptCallback = callback;
   }
 
   onAudio(callback: (callId: string, audioData: Buffer) => void): void {

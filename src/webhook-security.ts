@@ -209,7 +209,7 @@ export function verifyTwilioWebhook(
 
   return {
     ok: false,
-    reason: `Invalid signature for URL: ${verificationUrl}`,
+    reason: "Invalid signature",
     verificationUrl,
     isNgrokFreeTier,
   };

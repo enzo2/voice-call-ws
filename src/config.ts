@@ -115,10 +115,10 @@ export const VoiceCallTunnelConfigSchema = z
      * will be logged but allowed through. Less secure, but necessary
      * for ngrok free tier which may modify URLs.
      */
-    allowNgrokFreeTier: z.boolean().default(true),
+    allowNgrokFreeTier: z.boolean().default(false),
   })
   .strict()
-  .default({ provider: "none", allowNgrokFreeTier: true });
+  .default({ provider: "none", allowNgrokFreeTier: false });
 export type VoiceCallTunnelConfig = z.infer<typeof VoiceCallTunnelConfigSchema>;
 
 // -----------------------------------------------------------------------------
@@ -151,11 +151,11 @@ export type OutboundConfig = z.infer<typeof OutboundConfigSchema>;
 export const XaiVoiceAgentConfigSchema = z
   .object({
     apiKey: z.string().min(1).optional(),
-    voice: z.enum(["Ara", "Rex", "Sal", "Eve", "Leo"]).default("Ara"),
+    voice: z.enum(["Ara", "Rex", "Sal", "Eve", "Leo"]).default("Rex"),
     vadThreshold: z.number().min(0).max(1).default(0.5),
   })
   .strict()
-  .default({ voice: "Ara", vadThreshold: 0.5 });
+  .default({ voice: "Rex", vadThreshold: 0.5 });
 export type XaiVoiceAgentConfig = z.infer<typeof XaiVoiceAgentConfigSchema>;
 
 export const GeminiLiveConfigSchema = z
@@ -167,13 +167,13 @@ export const GeminiLiveConfigSchema = z
       .default("gemini-2.5-flash-native-audio-preview-12-2025"),
     voice: z.string().min(1).optional(),
     inputTranscription: z.boolean().default(true),
-    outputTranscription: z.boolean().default(false),
+    outputTranscription: z.boolean().default(true),
   })
   .strict()
   .default({
     model: "gemini-2.5-flash-native-audio-preview-12-2025",
     inputTranscription: true,
-    outputTranscription: false,
+    outputTranscription: true,
   });
 export type GeminiLiveConfig = z.infer<typeof GeminiLiveConfigSchema>;
 
@@ -222,6 +222,42 @@ export const VoiceCallWsToolPolicySchema = z
 export type VoiceCallWsToolPolicy = z.infer<typeof VoiceCallWsToolPolicySchema>;
 
 // -----------------------------------------------------------------------------
+// Voice Agent Identity (publishable, optional)
+// -----------------------------------------------------------------------------
+
+export const VoiceAgentIdentitySchema = z
+  .object({
+    /** Owner name shown to the caller (optional). */
+    ownerName: z.string().min(1).optional(),
+    /** Agent name shown to the caller (optional). */
+    agentName: z.string().min(1).optional(),
+  })
+  .strict()
+  .default({});
+export type VoiceAgentIdentity = z.infer<typeof VoiceAgentIdentitySchema>;
+
+// -----------------------------------------------------------------------------
+// Privacy / Retention (publishable defaults)
+// -----------------------------------------------------------------------------
+
+export const PrivacyConfigSchema = z
+  .object({
+    /** Persist call transcript entries to calls.jsonl */
+    persistTranscript: z.boolean().default(false),
+    /** When returning status, allow including transcript entries */
+    allowTranscriptInStatus: z.boolean().default(true),
+    /** Mask phone numbers in status payloads */
+    redactPhoneNumbersInStatus: z.boolean().default(true),
+  })
+  .strict()
+  .default({
+    persistTranscript: false,
+    allowTranscriptInStatus: true,
+    redactPhoneNumbersInStatus: true,
+  });
+export type PrivacyConfig = z.infer<typeof PrivacyConfigSchema>;
+
+// -----------------------------------------------------------------------------
 // Main Voice Call WS Configuration
 // -----------------------------------------------------------------------------
 
@@ -247,6 +283,12 @@ export const VoiceCallWsConfigSchema = z
 
     /** Greeting message for inbound calls */
     inboundGreeting: z.string().optional(),
+
+    /** Voice agent identity shown to callers (optional) */
+    voiceAgent: VoiceAgentIdentitySchema,
+
+    /** Privacy/retention controls */
+    privacy: PrivacyConfigSchema,
 
     /** Outbound call configuration */
     outbound: OutboundConfigSchema,

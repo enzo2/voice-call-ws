@@ -48,7 +48,7 @@ function resolveTelephonyProvider(config: VoiceCallWsConfig): TelephonyProvider 
         config.telephony.twilio?.authToken ?? process.env.TWILIO_AUTH_TOKEN,
     },
     {
-      allowNgrokFreeTier: config.tunnel?.allowNgrokFreeTier ?? true,
+      allowNgrokFreeTier: config.tunnel?.allowNgrokFreeTier ?? false,
       publicUrl: config.publicUrl,
       skipVerification: config.skipSignatureVerification,
       streamPath: config.realtime.streamPath,
@@ -87,6 +87,13 @@ export async function createVoiceCallWsRuntime(params: {
     error: console.error,
     debug: console.debug,
   };
+
+  if (config.tunnel?.allowNgrokFreeTier) {
+    log.warn(
+      "[voice-call-ws] WARNING: allowNgrokFreeTier is enabled. This reduces webhook signature verification security and should only be used for development/testing.",
+    );
+  }
+
 
   if (!config.enabled) {
     throw new Error(

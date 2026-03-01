@@ -6,6 +6,7 @@ import { describe, it, expect, vi } from "vitest";
 
 import { VoiceCallWsConfigSchema } from "./config.js";
 import { CallManager } from "./manager.js";
+import { TerminalStates } from "./types.js";
 import type { TelephonyProvider } from "./providers/base.js";
 import type { RealtimeProvider } from "./realtime/base.js";
 
@@ -31,7 +32,10 @@ function createConfig(storePath: string) {
   });
 }
 
-function createProvider(providerCallId: string): TelephonyProvider {
+function createProvider(
+  providerCallId: string,
+  hangup?: (input: { callId: string; providerCallId: string; reason: string }) => void,
+): TelephonyProvider {
   return {
     name: "twilio",
     verifyWebhook: () => ({ ok: true }),
@@ -40,7 +44,9 @@ function createProvider(providerCallId: string): TelephonyProvider {
       providerCallId,
       status: "initiated",
     }),
-    hangupCall: async () => {},
+    hangupCall: async (input) => {
+      hangup?.(input);
+    },
   };
 }
 
@@ -191,6 +197,69 @@ describe("CallManager", () => {
     });
 
     expect(disconnect).toHaveBeenCalledWith(providerCallId);
+
+    await rm(tmpDir, { recursive: true, force: true });
+  });
+
+  it("resolves providerCallId for endCall lookups", async () => {
+    const tmpDir = await mkdtemp(path.join(os.tmpdir(), "voice-call-ws-map-"));
+    const storePath = path.join(tmpDir, "store");
+    const config = createConfig(storePath);
+
+    const providerCallId = "CA111";
+    const hangup = vi.fn();
+    const provider = createProvider(providerCallId, hangup);
+    const realtime = createRealtime([]);
+    const disconnect = vi.fn(async () => {});
+    realtime.disconnect = disconnect;
+
+    const manager = new CallManager(config, storePath);
+    manager.initialize(provider, realtime, "http://localhost");
+
+    const callResult = await manager.initiateCall(config.toNumber || "", undefined, {
+      mode: "conversation",
+    });
+    expect(callResult.success).toBe(true);
+
+    const byProvider = manager.getCallByProviderCallId(providerCallId);
+    expect(byProvider?.callId).toBe(callResult.callId);
+
+    const endResult = await manager.endCall(providerCallId);
+    expect(endResult.success).toBe(true);
+    expect(hangup).toHaveBeenCalledWith({
+      callId: callResult.callId,
+      providerCallId,
+      reason: "hangup-bot",
+    });
+    expect(disconnect).toHaveBeenCalledWith(providerCallId);
+    const ended = manager.getCall(callResult.callId);
+    expect(ended).toBeDefined();
+    expect(TerminalStates.has(ended!.state)).toBe(true);
+
+    await rm(tmpDir, { recursive: true, force: true });
+  });
+
+  it("records output transcript as bot transcript", async () => {
+    const tmpDir = await mkdtemp(path.join(os.tmpdir(), "voice-call-ws-out-"));
+    const storePath = path.join(tmpDir, "store");
+    const config = createConfig(storePath);
+
+    const providerCallId = "CA_OUT";
+    const provider = createProvider(providerCallId);
+    const realtime = createRealtime([]);
+
+    const manager = new CallManager(config, storePath);
+    manager.initialize(provider, realtime, "http://localhost");
+
+    const callResult = await manager.initiateCall(config.toNumber || "", undefined, {
+      mode: "conversation",
+    });
+    expect(callResult.success).toBe(true);
+
+    // simulate provider output transcript
+    manager.recordAssistantTranscript(callResult.callId, "Hello from the bot");
+    const call = manager.getCall(callResult.callId);
+    expect(call?.transcript.some((e) => e.speaker === "bot" && e.text.includes("Hello"))).toBe(true);
 
     await rm(tmpDir, { recursive: true, force: true });
   });

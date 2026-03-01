@@ -201,7 +201,7 @@ export class TwilioProvider implements TelephonyProvider {
 
     // For inbound calls, answer immediately with stream.
     if (direction === "inbound") {
-      const streamUrl = this.getStreamUrl();
+      const streamUrl = this.getStreamUrl(params.get("CallSid") || "");
       return streamUrl
         ? this.getStreamConnectXml(streamUrl)
         : TwilioProvider.PAUSE_TWIML;
@@ -212,17 +212,28 @@ export class TwilioProvider implements TelephonyProvider {
       return TwilioProvider.EMPTY_TWIML;
     }
 
-    const streamUrl = this.getStreamUrl();
+    const streamUrl = this.getStreamUrl(params.get("CallSid") || "");
     return streamUrl
       ? this.getStreamConnectXml(streamUrl)
       : TwilioProvider.PAUSE_TWIML;
+  }
+
+
+  private computeStreamToken(callSid: string): string {
+    // Deterministic token derived from Twilio auth token + CallSid.
+    // Used to bind the Media Stream websocket URL to a specific call.
+    return crypto
+      .createHmac("sha256", this.authToken)
+      .update(callSid)
+      .digest("hex")
+      .slice(0, 32);
   }
 
   /**
    * Get the WebSocket URL for media streaming.
    * Derives from the public URL origin + stream path.
    */
-  private getStreamUrl(): string | null {
+  private getStreamUrl(callSid: string): string | null {
     if (!this.currentPublicUrl || !this.options.streamPath) {
       return null;
     }
@@ -241,7 +252,12 @@ export class TwilioProvider implements TelephonyProvider {
       ? this.options.streamPath
       : `/${this.options.streamPath}`;
 
-    return `${wsOrigin}${path}`;
+    const u = new URL(`${wsOrigin}${path}`);
+    if (callSid) {
+      u.searchParams.set("callSid", callSid);
+      u.searchParams.set("token", this.computeStreamToken(callSid));
+    }
+    return u.toString();
   }
 
   /**

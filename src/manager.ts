@@ -31,13 +31,37 @@ type TranscriptWaiter = {
 export class CallManager {
   private activeCalls = new Map<CallId, CallRecord>();
   private providerCallIdMap = new Map<string, CallId>(); // providerCallId -> internal callId
-  private processedEventIds = new Set<string>();
+  private recentCalls = new Map<CallId, { call: CallRecord; expiresAt: number }>();
+  private recentCallsTtlMs = 10 * 60 * 1000;
+  private processedEventIds = new Map<string, number>();
+  private processedEventTtlMs = 60 * 60 * 1000;
+  private processedEventMaxSize = 5000;
   private provider: TelephonyProvider | null = null;
   private realtime: RealtimeProvider | null = null;
   private config: VoiceCallWsConfig;
   private storePath: string;
   private webhookUrl: string | null = null;
   private transcriptWaiters = new Map<CallId, TranscriptWaiter>();
+  private pruneProcessedEventIds(now: number): void {
+    // Time-based pruning
+    for (const [id, ts] of this.processedEventIds) {
+      if (now - ts > this.processedEventTtlMs) {
+        this.processedEventIds.delete(id);
+      }
+    }
+
+    // Size-based pruning (drop oldest)
+    if (this.processedEventIds.size > this.processedEventMaxSize) {
+      const entries = Array.from(this.processedEventIds.entries()).sort(
+        (a, b) => a[1] - b[1],
+      );
+      const drop = this.processedEventIds.size - this.processedEventMaxSize;
+      for (let i = 0; i < drop; i++) {
+        this.processedEventIds.delete(entries[i][0]);
+      }
+    }
+  }
+
   /** Max duration timers to auto-hangup calls after configured timeout */
   private maxDurationTimers = new Map<CallId, NodeJS.Timeout>();
 
@@ -157,6 +181,7 @@ export class CallManager {
       callRecord.endedAt = Date.now();
       callRecord.endReason = "failed";
       this.persistCallRecord(callRecord);
+      this.moveToRecentCalls(callRecord);
       this.activeCalls.delete(callId);
       if (callRecord.providerCallId) {
         this.providerCallIdMap.delete(callRecord.providerCallId);
@@ -170,7 +195,18 @@ export class CallManager {
     }
   }
 
-  /**
+    /**
+   * Record assistant speech in transcript (used when provider supplies output transcription).
+   */
+  recordAssistantTranscript(callIdOrProviderCallId: CallId, text: string): void {
+    const call = this.findCall(callIdOrProviderCallId);
+    if (!call) return;
+    if (!text || text.trim().length < 1) return;
+    this.addTranscriptEntry(call, "bot", text.trim());
+    this.persistCallRecord(call);
+  }
+
+/**
    * Speak to user in an active call.
    */
   async speak(
@@ -225,7 +261,7 @@ export class CallManager {
     
     // In notify mode, we use a direct User command to force the model to speak the notification.
 
-    if (call.metadata) {
+    if (mode === "notify" && call.metadata) {
       delete call.metadata.initialMessage;
       this.persistCallRecord(call);
     }
@@ -295,6 +331,9 @@ export class CallManager {
   async endCall(callId: CallId): Promise<{ success: boolean; error?: string }> {
     const call = this.findCall(callId);
     if (!call) return { success: false, error: "Call not found" };
+    if (TerminalStates.has(call.state)) {
+      return { success: true };
+    }
     if (!this.provider || !call.providerCallId) {
       return { success: false, error: "Call not connected" };
     }
@@ -312,6 +351,7 @@ export class CallManager {
       this.persistCallRecord(call);
       this.clearMaxDurationTimer(call.callId);
       this.rejectTranscriptWaiter(call.callId, "Call ended: hangup-bot");
+      this.moveToRecentCalls(call);
       this.activeCalls.delete(call.callId);
       this.providerCallIdMap.delete(call.providerCallId);
       return { success: true };
@@ -325,8 +365,10 @@ export class CallManager {
    * Process a normalized call event.
    */
   processEvent(event: NormalizedEvent): void {
+    const now = Date.now();
+    this.pruneProcessedEventIds(now);
     if (this.processedEventIds.has(event.id)) return;
-    this.processedEventIds.add(event.id);
+    this.processedEventIds.set(event.id, now);
 
     let call = this.findCall(event.callId);
 
@@ -365,6 +407,10 @@ export class CallManager {
     }
 
     call.processedEventIds.push(event.id);
+    const MAX_CALL_EVENT_IDS = 500;
+    if (call.processedEventIds.length > MAX_CALL_EVENT_IDS) {
+      call.processedEventIds.splice(0, call.processedEventIds.length - MAX_CALL_EVENT_IDS);
+    }
 
     switch (event.type) {
       case "call.initiated":
@@ -403,6 +449,7 @@ export class CallManager {
         this.transitionState(call, event.reason as CallState);
         this.clearMaxDurationTimer(call.callId);
         this.rejectTranscriptWaiter(call.callId, `Call ended: ${event.reason}`);
+        this.moveToRecentCalls(call);
         this.activeCalls.delete(call.callId);
         if (call.providerCallId) {
           this.providerCallIdMap.delete(call.providerCallId);
@@ -416,6 +463,7 @@ export class CallManager {
           this.transitionState(call, "error");
           this.clearMaxDurationTimer(call.callId);
           this.rejectTranscriptWaiter(call.callId, `Call error: ${event.error}`);
+          this.moveToRecentCalls(call);
           this.activeCalls.delete(call.callId);
           if (call.providerCallId) {
             this.providerCallIdMap.delete(call.providerCallId);
@@ -431,7 +479,7 @@ export class CallManager {
    * Look up a call by internal callId.
    */
   getCall(callId: CallId): CallRecord | undefined {
-    return this.activeCalls.get(callId);
+    return this.activeCalls.get(callId) ?? this.getRecentCall(callId);
   }
 
   /**
@@ -443,6 +491,8 @@ export class CallManager {
     for (const call of this.activeCalls.values()) {
       if (call.providerCallId === providerCallId) return call;
     }
+    const recent = this.getRecentCallByProviderCallId(providerCallId);
+    if (recent) return recent;
     return undefined;
   }
 
@@ -457,6 +507,8 @@ export class CallManager {
   private findCall(callIdOrProviderCallId: string): CallRecord | undefined {
     const directCall = this.activeCalls.get(callIdOrProviderCallId);
     if (directCall) return directCall;
+    const recentDirect = this.getRecentCall(callIdOrProviderCallId);
+    if (recentDirect) return recentDirect;
     return this.getCallByProviderCallId(callIdOrProviderCallId);
   }
 
@@ -595,9 +647,30 @@ export class CallManager {
     this.disconnectRealtimeById(realtimeCallId);
   }
 
+    validateStreamToken(callSid: string, token: string): boolean {
+    const authToken = this.config.telephony.twilio?.authToken;
+    if (!authToken) return false;
+    const expected = crypto
+      .createHmac("sha256", authToken)
+      .update(callSid)
+      .digest("hex")
+      .slice(0, 32);
+    return expected === token;
+  }
+
   private persistCallRecord(call: CallRecord): void {
     const logPath = path.join(this.storePath, "calls.jsonl");
-    const line = `${JSON.stringify(call)}\n`;
+
+    const persistTranscript = this.config.privacy?.persistTranscript ?? false;
+    const record: CallRecord = persistTranscript
+      ? call
+      : {
+          ...call,
+          transcript: [],
+        };
+
+    const line = `${JSON.stringify(record)}
+`;
     fsp.appendFile(logPath, line).catch((err) => {
       console.error("[voice-call-ws] Failed to persist call record:", err);
     });
@@ -630,8 +703,41 @@ export class CallManager {
         this.providerCallIdMap.set(call.providerCallId, callId);
       }
       for (const eventId of call.processedEventIds) {
-        this.processedEventIds.add(eventId);
+        this.processedEventIds.set(eventId, Date.now());
       }
     }
+  }
+
+  private pruneRecentCalls(): void {
+    const now = Date.now();
+    for (const [callId, entry] of this.recentCalls) {
+      if (entry.expiresAt <= now) {
+        this.recentCalls.delete(callId);
+      }
+    }
+  }
+
+  private moveToRecentCalls(call: CallRecord): void {
+    this.pruneRecentCalls();
+    this.recentCalls.set(call.callId, {
+      call,
+      expiresAt: Date.now() + this.recentCallsTtlMs,
+    });
+  }
+
+  private getRecentCall(callId: CallId): CallRecord | undefined {
+    this.pruneRecentCalls();
+    const entry = this.recentCalls.get(callId);
+    return entry?.call;
+  }
+
+  private getRecentCallByProviderCallId(
+    providerCallId: string,
+  ): CallRecord | undefined {
+    this.pruneRecentCalls();
+    for (const { call } of this.recentCalls.values()) {
+      if (call.providerCallId === providerCallId) return call;
+    }
+    return undefined;
   }
 }

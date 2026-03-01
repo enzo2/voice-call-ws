@@ -1,4 +1,3 @@
-import { loadCoreAgentDeps } from "./core-bridge.js";
 import type { VoiceCallWsConfig } from "./config.js";
 import type { CoreConfig } from "./core-bridge.js";
 import type { CallRecord } from "./types.js";
@@ -10,7 +9,6 @@ import type {
 } from "./realtime/base.js";
 
 const DEFAULT_AGENT_ID = "voice";
-const DEFAULT_TOOL_PROFILE = "messaging";
 
 type AgentTool = {
   name: string;
@@ -33,16 +31,9 @@ type Logger = {
   debug: (message: string) => void;
 };
 
-type ToolPolicy = {
-  allow?: string[];
-  deny?: string[];
-};
-
 export class VoiceCallAgent {
-  private depsPromise: ReturnType<typeof loadCoreAgentDeps> | null = null;
   private toolCache: { tools: AgentTool[]; definitions: RealtimeToolDefinition[] } | null =
     null;
-  private workspaceDir: string | null = null;
 
   constructor(
     private params: {
@@ -50,7 +41,6 @@ export class VoiceCallAgent {
       coreConfig: CoreConfig;
       logger?: Logger;
       manager?: CallManager;
-      loadDeps?: typeof loadCoreAgentDeps;
     },
   ) {}
 
@@ -78,7 +68,9 @@ export class VoiceCallAgent {
         args = JSON.parse(argsText);
       } catch (err) {
         return {
-          error: `Invalid tool arguments for ${toolName}: ${err instanceof Error ? err.message : String(err)}`,
+          error: `Invalid tool arguments for ${toolName}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
         };
       }
     }
@@ -86,9 +78,10 @@ export class VoiceCallAgent {
     try {
       return await tool.execute(fnCall.callId, args, undefined, undefined, { call });
     } catch (err) {
-      const logger = this.params.logger;
-      logger?.error(
-        `[voice-call-ws] Tool ${toolName} failed: ${err instanceof Error ? err.message : String(err)}`,
+      this.params.logger?.error(
+        `[voice-call-ws] Tool ${toolName} failed: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
       );
       return { error: `Tool ${toolName} failed` };
     }
@@ -100,116 +93,42 @@ export class VoiceCallAgent {
   }> {
     // If profile changed, invalidate cache (simplified: always rebuild if call profile set)
     const callProfile = this.readMetadataString(call, "profile");
-    if (callProfile || !this.toolCache) {
-      // no-op, just proceed to build
-    } else {
-       return this.toolCache;
+    if (!callProfile && this.toolCache) {
+      return this.toolCache;
     }
 
-    const deps = await this.getDeps();
-    const agentId = DEFAULT_AGENT_ID;
-    const agentDir = deps.resolveAgentDir(this.params.coreConfig, agentId);
-    const workspaceDir = deps.resolveAgentWorkspaceDir(this.params.coreConfig, agentId);
-    this.workspaceDir = workspaceDir;
-    const sessionKey = `agent:${agentId}:voice`;
+    const tools: AgentTool[] = [];
 
-    const rawTools = deps.createClawdbotCodingTools({
-      config: this.params.coreConfig,
-      sessionKey,
-      agentDir,
-      workspaceDir,
-    }) as AgentTool[];
+    // Only include tools that are implemented locally by this plugin.
+    // Keep this publishable (avoid depending on OpenClaw internal dist module layout).
+    const deny = new Set(
+      (this.params.config.tools?.deny ?? []).map((t) => t.trim().toLowerCase()),
+    );
 
-    const policy = this.resolveToolPolicy(deps, callProfile);
-    const tools = this.filterTools(rawTools, policy, deps);
-
-    // Inject end_call tool as a system tool (post-filter)
-    // This ensures it doesn't trigger the "allow-only" logic of the filter if the allowlist was empty.
-    if (this.params.manager) {
+    if (this.params.manager && !deny.has("end_call")) {
       const manager = this.params.manager;
-      const endCallName = "end_call";
-      const normalizedEndCall = deps.normalizeToolName(endCallName);
-      
-      // Check if explicitly denied in the policy
-      const expandedDeny = deps.expandToolGroups(policy.deny);
-      const isDenied = expandedDeny.some(
-        (name) => deps.normalizeToolName(name) === normalizedEndCall
-      );
-
-      if (!isDenied) {
-        tools.push({
-          name: endCallName,
-          label: "End Call",
-          description: "End the current voice call. Use this when the user says goodbye or asks to hang up. You can also choose to hang up if your conversation is complete.",
-          parameters: { type: "object", properties: {} }, // No params needed, callId inferred
-          execute: async (_toolCallId, _params, _signal, _onUpdate, context) => {
-            const activeCall = context?.call;
-            if (!activeCall) return { error: "No active call context" };
-            await manager.endCall(activeCall.callId);
-            return { success: true, status: "call_ended" };
-          },
-        });
-      }
+      tools.push({
+        name: "end_call",
+        label: "End Call",
+        description:
+          "End the current voice call. Use this when the caller says goodbye or asks to hang up.",
+        parameters: { type: "object", properties: {} },
+        execute: async (_toolCallId, _params, _signal, _onUpdate, context) => {
+          const activeCall = context?.call;
+          if (!activeCall) return { error: "No active call context" };
+          await manager.endCall(activeCall.callId);
+          return { success: true, status: "call_ended" };
+        },
+      });
     }
 
     const definitions = this.buildToolDefinitions(tools);
 
-    // Cache only if no specific profile override
     if (!callProfile) {
       this.toolCache = { tools, definitions };
     }
-    
+
     return { tools, definitions };
-  }
-
-  private async getDeps() {
-    if (!this.depsPromise) {
-      const loader = this.params.loadDeps ?? loadCoreAgentDeps;
-      this.depsPromise = loader();
-    }
-    return this.depsPromise;
-  }
-
-  private resolveToolPolicy(
-    deps: Awaited<ReturnType<typeof loadCoreAgentDeps>>, 
-    profileOverride?: string | null
-  ): ToolPolicy {
-    const toolConfig = this.params.config.tools;
-    const profile = profileOverride ?? toolConfig?.profile ?? DEFAULT_TOOL_PROFILE;
-    const profilePolicy = deps.resolveToolProfilePolicy(profile);
-
-    const allow = [
-      ...(profilePolicy?.allow ?? []),
-      ...(toolConfig?.allow ?? []),
-    ];
-    
-    const deny = [
-      ...(profilePolicy?.deny ?? []),
-      ...(toolConfig?.deny ?? []),
-    ];
-
-    return {
-      allow: allow.length > 0 ? allow : undefined,
-      deny: deny.length > 0 ? deny : undefined,
-    };
-  }
-
-  private filterTools(
-    tools: AgentTool[],
-    policy: ToolPolicy,
-    deps: Awaited<ReturnType<typeof loadCoreAgentDeps>>,
-  ): AgentTool[] {
-    const expandedAllow = deps.expandToolGroups(policy.allow);
-    const expandedDeny = deps.expandToolGroups(policy.deny);
-    const allowSet = new Set(expandedAllow.map((name) => deps.normalizeToolName(name)));
-    const denySet = new Set(expandedDeny.map((name) => deps.normalizeToolName(name)));
-
-    return tools.filter((tool) => {
-      const normalized = deps.normalizeToolName(tool.name);
-      if (denySet.has(normalized)) return false;
-      if (allowSet.size === 0) return true;
-      return allowSet.has(normalized);
-    });
   }
 
   private buildToolDefinitions(tools: AgentTool[]): RealtimeToolDefinition[] {
@@ -224,48 +143,48 @@ export class VoiceCallAgent {
     call: CallRecord | null,
     tools: RealtimeToolDefinition[],
   ): Promise<string> {
-    const deps = await this.getDeps();
-    const agentId = DEFAULT_AGENT_ID;
-    const identity = deps.resolveAgentIdentity(this.params.coreConfig, agentId);
-    const agentName = identity?.name?.trim() || "assistant";
+    const configuredAgentName = this.params.config.voiceAgent?.agentName?.trim() ?? "";
+    const configuredOwnerName = this.params.config.voiceAgent?.ownerName?.trim() ?? "";
 
-    const toolSummaries = this.buildToolSummaryMap(tools);
-    const basePrompt = deps.buildAgentSystemPrompt({
-      workspaceDir: this.workspaceDir ?? process.cwd(),
-      promptMode: "minimal",
-      toolNames: tools.map((tool) => tool.name),
-      toolSummaries,
-      runtimeInfo: { agentId, channel: "voice" },
-      reasoningTagHint: false,
-    });
+    const agentName = configuredAgentName || "assistant";
 
     const callContext = this.formatCallContext(call);
-    
-    // In conversation mode, the "initialMessage" is the System Prompt / Goal
+
     const initialMessage = this.readMetadataString(call, "initialMessage");
     const mode = this.readMetadataString(call, "mode");
-    const goalBlock = (mode === "conversation" && initialMessage)
-      ? `GOAL: ${initialMessage}\nStart the conversation by introducing yourself or addressing this goal immediately.`
-      : "";
+    const goalBlock =
+      mode === "conversation" && initialMessage
+        ? `GOAL: ${initialMessage}
+Start the conversation by introducing yourself or addressing this goal immediately.`
+        : "";
 
-    const voiceBlock = [
-      `You are ${agentName}, a voice-call agent acting on behalf of the Clawdbot owner.`,
-      "You are not Clawdbot itself and do not have broad system or filesystem access.",
-      "Only use the tools listed above. If something is out of scope, say so and offer to take a message.",
-      "This call may involve third parties. Be polite, concise, and professional.",
-      "Never mention internal systems, tool names, or hidden capabilities to the caller.",
-      "When given a task, be mission-focused and confirm key details before committing.",
-      "Keep responses brief and natural for a phone call (1-2 sentences).",
+    const toolList = tools.length
+      ? [
+          "Available tools:",
+          ...tools.map((t) => `- ${t.name}: ${t.description ?? ""}`.trim()),
+          "",
+        ]
+      : [];
+
+    const identityLine = configuredOwnerName
+      ? `You are ${agentName}, a helpful voice assistant for ${configuredOwnerName}.`
+      : `You are ${agentName}, a helpful voice assistant for the owner.`;
+
+    return [
+      identityLine,
+      "Speak naturally (not corporate) and keep responses brief (1-2 sentences).",
+      "If the caller asks you to hang up, end the call immediately.",
+      "Don’t mention internal file paths, configuration details, or implementation details.",
       "",
+      ...toolList,
       goalBlock,
       "",
       "Call context:",
       ...callContext,
     ]
       .filter(Boolean)
-      .join("\n");
-
-    return `${basePrompt}\n\n${voiceBlock}`.trim();
+      .join("\n")
+      .trim();
   }
 
   private formatCallContext(call: CallRecord | null): string[] {
@@ -284,18 +203,6 @@ export class VoiceCallAgent {
       mode ? `- Mode: ${mode}` : "",
       initialMessage ? `- Initial instruction: ${initialMessage}` : "",
     ].filter(Boolean);
-  }
-
-  private buildToolSummaryMap(
-    tools: RealtimeToolDefinition[],
-  ): Record<string, string> {
-    const summaries: Record<string, string> = {};
-    for (const tool of tools) {
-      const summary = tool.description?.trim();
-      if (!summary) continue;
-      summaries[tool.name.toLowerCase()] = summary;
-    }
-    return summaries;
   }
 
   private readMetadataString(call: CallRecord | null, key: string): string | null {

@@ -40,6 +40,10 @@ export interface RealtimeProvider {
   onPartialTranscript(
     callback: (callId: string, partial: string) => void,
   ): void;
+
+  /** Optional: model/output-side transcript (assistant speech) when provider supports it. */
+  onOutputTranscript?(callback: (callId: string, transcript: string) => void): void;
+
   onAudio(callback: (callId: string, audioData: Buffer) => void): void;
   onError(callback: (callId: string, error: string) => void): void;
   onFunctionCall(

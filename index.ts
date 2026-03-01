@@ -18,6 +18,36 @@ const ACTIONS = [
 
 const MODES = ["notify", "conversation"] as const;
 
+function maskE164(input: string | undefined): string | undefined {
+  if (!input) return input;
+  const s = String(input);
+  if (!s.startsWith("+") || s.length < 5) return s;
+  const keep = s.slice(-2);
+  return "+" + "*".repeat(Math.max(0, s.length - 3)) + keep;
+}
+
+function sanitizeCallForStatus(params: {
+  call: any;
+  includeTranscript: boolean;
+  config: any;
+}): any {
+  const { call, includeTranscript, config } = params;
+  const privacy = config?.privacy ?? {};
+  const allowTranscript = privacy.allowTranscriptInStatus ?? true;
+  const redactPhones = privacy.redactPhoneNumbersInStatus ?? true;
+
+  const out: any = { ...call };
+  if (redactPhones) {
+    out.from = maskE164(out.from);
+    out.to = maskE164(out.to);
+  }
+  if (!includeTranscript || !allowTranscript) {
+    delete out.transcript;
+  }
+  return out;
+}
+
+
 function stringEnum<T extends readonly string[]>(
   values: T,
   options: { description?: string } = {},
@@ -34,7 +64,17 @@ const VoiceCallWsToolSchema = Type.Object(
     action: stringEnum(ACTIONS, {
       description: `Action to perform: ${ACTIONS.join(", ")}`,
     }),
-    callId: Type.Optional(Type.String({ description: "Call ID" })),
+    callId: Type.Optional(
+      Type.String({
+        description: "Call ID (internal callId or provider CallSid)",
+      }),
+    ),
+    providerCallId: Type.Optional(
+      Type.String({ description: "Provider CallSid (Twilio CallSid)" }),
+    ),
+    sid: Type.Optional(
+      Type.String({ description: "Provider CallSid (Twilio CallSid)" }),
+    ),
     to: Type.Optional(Type.String({ description: "Call target" })),
     message: Type.Optional(Type.String({ description: "Message text or system prompt (depending on mode)" })),
     mode: Type.Optional(stringEnum(MODES)),
@@ -93,6 +133,23 @@ const voiceCallWsPlugin = {
       respond(false, { error: err instanceof Error ? err.message : String(err) });
     };
 
+    const resolveCallId = (
+      params: Record<string, unknown> | undefined,
+    ): string => {
+      const candidates = [
+        typeof params?.callId === "string" ? params.callId : undefined,
+        typeof params?.providerCallId === "string"
+          ? params.providerCallId
+          : undefined,
+        typeof params?.sid === "string" ? params.sid : undefined,
+      ];
+      for (const c of candidates) {
+        const v = typeof c === "string" ? c.trim() : "";
+        if (v) return v;
+      }
+      return "";
+    };
+
     api.registerGatewayMethod("voicecallws.initiate", async ({ params, respond }) => {
       try {
         const message =
@@ -130,8 +187,7 @@ const voiceCallWsPlugin = {
 
     api.registerGatewayMethod("voicecallws.speak", async ({ params, respond }) => {
       try {
-        const callId =
-          typeof params?.callId === "string" ? params.callId.trim() : "";
+        const callId = resolveCallId(params);
         const message =
           typeof params?.message === "string" ? params.message.trim() : "";
         if (!callId || !message) {
@@ -152,8 +208,7 @@ const voiceCallWsPlugin = {
 
     api.registerGatewayMethod("voicecallws.end", async ({ params, respond }) => {
       try {
-        const callId =
-          typeof params?.callId === "string" ? params.callId.trim() : "";
+        const callId = resolveCallId(params);
         if (!callId) {
           respond(false, { error: "callId required" });
           return;
@@ -172,12 +227,7 @@ const voiceCallWsPlugin = {
 
     api.registerGatewayMethod("voicecallws.status", async ({ params, respond }) => {
       try {
-        const raw =
-          typeof params?.callId === "string"
-            ? params.callId.trim()
-            : typeof params?.sid === "string"
-              ? params.sid.trim()
-              : "";
+        const raw = resolveCallId(params);
         if (!raw) {
           respond(false, { error: "callId required" });
           return;
@@ -233,7 +283,7 @@ const voiceCallWsPlugin = {
               return json({ callId: result.callId, initiated: true });
             }
             case "speak_to_user": {
-              const callId = String(params.callId || "").trim();
+              const callId = resolveCallId(params as Record<string, unknown>);
               const message = String(params.message || "").trim();
               if (!callId || !message) {
                 throw new Error("callId and message required");
@@ -245,7 +295,7 @@ const voiceCallWsPlugin = {
               return json({ success: true });
             }
             case "end_call": {
-              const callId = String(params.callId || "").trim();
+              const callId = resolveCallId(params as Record<string, unknown>);
               if (!callId) throw new Error("callId required");
               const result = await rt.manager.endCall(callId);
               if (!result.success) {
@@ -254,7 +304,7 @@ const voiceCallWsPlugin = {
               return json({ success: true });
             }
             case "get_status": {
-              const callId = String(params.callId || "").trim();
+              const callId = resolveCallId(params as Record<string, unknown>);
               if (!callId) throw new Error("callId required");
               const call =
                 rt.manager.getCall(callId) ||

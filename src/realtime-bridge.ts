@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
 
@@ -15,7 +16,17 @@ import type { NormalizedEvent } from "./types.js";
 interface BridgeSession {
   callId: string;
   streamSid: string;
+  token?: string;
   twilioWs: WebSocket;
+
+  // Outbound (bot->Twilio) audio pacing.
+  // Twilio expects ~20ms μ-law frames (8kHz) to be sent in real time.
+  // Providers may emit larger chunks and may emit faster than real time.
+  outboundAudioQueue: Buffer[];
+  outboundAudioQueueHead: number;
+  outboundAudioRemainder: Buffer;
+  outboundAudioSending: boolean;
+  outboundTimer?: NodeJS.Timeout | null;
 }
 
 type BridgeConfig = {
@@ -63,7 +74,7 @@ export class RealtimeBridge {
 
     realtime.onTranscript((callId, transcript) => {
       const event: NormalizedEvent = {
-        id: `realtime-transcript-${Date.now()}`,
+        id: `realtime-transcript-${crypto.randomUUID()}`,
         type: "call.speech",
         callId,
         providerCallId: callId,
@@ -76,6 +87,10 @@ export class RealtimeBridge {
 
     realtime.onPartialTranscript((_callId, _partial) => {});
 
+    realtime.onOutputTranscript?.((callId, transcript) => {
+      manager.recordAssistantTranscript(callId, transcript);
+    });
+
     realtime.onAudio((callId, audioData) => {
       const streamSid = this.callToStream.get(callId);
       if (!streamSid) return;
@@ -83,18 +98,46 @@ export class RealtimeBridge {
       if (!session) return;
       if (session.twilioWs.readyState !== WebSocket.OPEN) return;
 
-      session.twilioWs.send(
-        JSON.stringify({
-          event: "media",
-          streamSid,
-          media: { payload: audioData.toString("base64") },
-        }),
-      );
+      // Twilio expects 8kHz μ-law. Typical 20ms frame is 160 bytes.
+      // Providers may emit larger chunks and may emit faster than real time.
+      // If we push too fast, Twilio buffers and playback becomes delayed/"slow".
+      const FRAME_BYTES = 160;
+      const MAX_QUEUE_FRAMES = 250; // ~5 seconds of audio at 20ms/frame
+
+      // Carry remainder across callbacks so we always send full 20ms frames.
+      let buf =
+        session.outboundAudioRemainder.length > 0
+          ? Buffer.concat([session.outboundAudioRemainder, audioData])
+          : audioData;
+
+      const fullLen = buf.length - (buf.length % FRAME_BYTES);
+      for (let i = 0; i < fullLen; i += FRAME_BYTES) {
+        session.outboundAudioQueue.push(buf.subarray(i, i + FRAME_BYTES));
+      }
+      session.outboundAudioRemainder = buf.subarray(fullLen);
+
+      // Bound the queue to avoid unbounded latency/memory growth.
+      const queued = session.outboundAudioQueue.length - session.outboundAudioQueueHead;
+      if (queued > MAX_QUEUE_FRAMES) {
+        const drop = queued - MAX_QUEUE_FRAMES;
+        session.outboundAudioQueueHead += drop;
+        if (session.outboundAudioQueueHead > 1024) {
+          session.outboundAudioQueue = session.outboundAudioQueue.slice(
+            session.outboundAudioQueueHead,
+          );
+          session.outboundAudioQueueHead = 0;
+        }
+        this.config.logger?.warn?.(
+          `[voice-call-ws] Outbound audio queue overflow; dropped ${drop} frames`,
+        );
+      }
+
+      this.pumpOutboundAudio(session);
     });
 
     realtime.onError((callId, error) => {
       manager.processEvent({
-        id: `realtime-error-${Date.now()}`,
+        id: `realtime-error-${crypto.randomUUID()}`,
         type: "call.error",
         callId,
         providerCallId: callId,
@@ -110,12 +153,81 @@ export class RealtimeBridge {
     });
   }
 
+  private pumpOutboundAudio(session: BridgeSession): void {
+    if (session.outboundAudioSending) return;
+    session.outboundAudioSending = true;
+
+    session.outboundTimer = setInterval(() => {
+      if (session.twilioWs.readyState !== WebSocket.OPEN) {
+        if (session.outboundTimer) clearInterval(session.outboundTimer);
+        session.outboundTimer = undefined;
+        session.outboundAudioQueue.length = 0;
+        session.outboundAudioQueueHead = 0;
+        session.outboundAudioRemainder = Buffer.alloc(0);
+        session.outboundAudioSending = false;
+        return;
+      }
+
+      const frame =
+        session.outboundAudioQueueHead < session.outboundAudioQueue.length
+          ? session.outboundAudioQueue[session.outboundAudioQueueHead]
+          : undefined;
+
+      if (!frame) {
+        if (session.outboundTimer) clearInterval(session.outboundTimer);
+        session.outboundTimer = undefined;
+        session.outboundAudioSending = false;
+
+        // Compact the queue when idle.
+        if (session.outboundAudioQueueHead > 0) {
+          session.outboundAudioQueue = session.outboundAudioQueue.slice(
+            session.outboundAudioQueueHead,
+          );
+          session.outboundAudioQueueHead = 0;
+        }
+        return;
+      }
+
+      session.outboundAudioQueueHead += 1;
+
+      try {
+        // track="outbound" is required for bidirectional streams.
+        session.twilioWs.send(
+          JSON.stringify({
+            event: "media",
+            streamSid: session.streamSid,
+            media: { payload: frame.toString("base64"), track: "outbound" },
+          }),
+        );
+      } catch (err) {
+        console.error("[voice-call-ws] Failed to send outbound audio:", err);
+        if (session.outboundTimer) clearInterval(session.outboundTimer);
+        session.outboundTimer = undefined;
+        session.outboundAudioQueue.length = 0;
+        session.outboundAudioQueueHead = 0;
+        session.outboundAudioRemainder = Buffer.alloc(0);
+        session.outboundAudioSending = false;
+      }
+
+      // Periodic compaction to prevent unbounded array growth.
+      if (session.outboundAudioQueueHead > 2048) {
+        session.outboundAudioQueue = session.outboundAudioQueue.slice(
+          session.outboundAudioQueueHead,
+        );
+        session.outboundAudioQueueHead = 0;
+      }
+    }, 20);
+  }
+
   private async handleConnection(
     ws: WebSocket,
-    _request: IncomingMessage,
+    request: IncomingMessage,
   ): Promise<void> {
     let session: BridgeSession | null = null;
     let messageQueue = Promise.resolve();
+
+    const reqUrl = new URL(request.url || "/", `http://${request.headers.host}`);
+    const token = reqUrl.searchParams.get("token") || undefined;
 
     ws.on("message", (data: Buffer) => {
       messageQueue = messageQueue.then(async () => {
@@ -126,7 +238,7 @@ export class RealtimeBridge {
             case "connected":
               break;
             case "start":
-              session = await this.handleStart(ws, message);
+              session = await this.handleStart(ws, message, token);
               break;
             case "media":
               if (session && message.media?.payload) {
@@ -161,9 +273,14 @@ export class RealtimeBridge {
   private async handleStart(
     ws: WebSocket,
     message: TwilioMediaMessage,
+    token?: string,
   ): Promise<BridgeSession> {
     const streamSid = message.streamSid || message.start?.streamSid || "";
     const callSid = message.start?.callSid || "";
+    if (!callSid.trim() || !streamSid.trim()) {
+      ws.close();
+      throw new Error("Missing callSid/streamSid in Twilio start event");
+    }
     if (!callSid) {
       ws.close();
       throw new Error("Missing callSid in Twilio start event");
@@ -173,10 +290,38 @@ export class RealtimeBridge {
       this.config.manager.getCallByProviderCallId(callSid) ??
       this.config.manager.getCall(callSid) ??
       null;
+
+    if (!callRecord) {
+      // Unknown call: refuse to connect provider sessions.
+      ws.close();
+      throw new Error("Unknown callSid");
+    }
+
+    if (token) {
+      const ok = this.config.manager.validateStreamToken(callSid, token);
+      if (!ok) {
+        this.config.logger?.warn?.("[voice-call-ws] Invalid stream token; closing socket");
+        ws.close();
+        throw new Error("Invalid stream token");
+      }
+    }
+
     let sessionOptions: RealtimeSessionOptions | null = null;
     if (this.config.agent) {
       try {
         sessionOptions = await this.config.agent.buildSessionOptions(callRecord);
+
+        if (process.env.VOICE_CALL_WS_DEBUG_PROMPT === "1") {
+          const instr = sessionOptions?.instructions ?? "";
+          const initial =
+            callRecord && typeof callRecord.metadata?.initialMessage === "string"
+              ? String(callRecord.metadata.initialMessage)
+              : "";
+          this.config.logger?.info(
+            `[voice-call-ws][debug] buildSessionOptions: instructions_len=${instr.length} instructions_preview=${JSON.stringify(instr.slice(0, 120))} initialMessage_len=${initial.length}`,
+          );
+        }
+
       } catch (err) {
         this.config.logger?.error(
           `[voice-call-ws] Failed to build voice session prompt: ${
@@ -197,7 +342,12 @@ export class RealtimeBridge {
     const session: BridgeSession = {
       callId: callSid,
       streamSid,
+      token,
       twilioWs: ws,
+      outboundAudioQueue: [],
+      outboundAudioQueueHead: 0,
+      outboundAudioRemainder: Buffer.alloc(0),
+      outboundAudioSending: false,
     };
 
     this.sessions.set(streamSid, session);
@@ -209,11 +359,23 @@ export class RealtimeBridge {
   }
 
   private handleStop(session: BridgeSession): void {
+    if (session.outboundTimer) {
+      clearInterval(session.outboundTimer);
+      session.outboundTimer = undefined;
+    }
+    session.outboundAudioQueue.length = 0;
+    session.outboundAudioQueueHead = 0;
+    session.outboundAudioRemainder = Buffer.alloc(0);
+    session.outboundAudioSending = false;
+
     this.config.realtime.disconnect(session.callId).catch((err) => {
       console.error("[voice-call-ws] Failed to disconnect realtime:", err);
     });
     this.sessions.delete(session.streamSid);
-    this.callToStream.delete(session.callId);
+    const current = this.callToStream.get(session.callId);
+    if (current === session.streamSid) {
+      this.callToStream.delete(session.callId);
+    }
   }
 
   closeAll(): void {

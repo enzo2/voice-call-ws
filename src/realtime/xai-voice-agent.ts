@@ -47,6 +47,8 @@ type XaiEvent =
   | { type: "error"; error: unknown };
 
 interface XaiSession {
+  disposed?: boolean;
+  reconnectTimer?: NodeJS.Timeout;
   callId: string;
   ws: WebSocket | null;
   connected: boolean;
@@ -106,10 +108,16 @@ export class XaiVoiceAgentProvider implements RealtimeProvider {
     const session = this.sessions.get(callId);
     if (!session) return;
 
-    session.connected = false;
-    if (session.ws) {
-      session.ws.close();
-      session.ws = null;
+    session.disposed = true;
+    if (session.reconnectTimer) {
+      clearTimeout(session.reconnectTimer);
+      session.reconnectTimer = undefined;
+    }
+
+    try {
+      session.ws?.close();
+    } catch {
+      // ignore
     }
 
     this.sessions.delete(callId);
@@ -276,7 +284,7 @@ export class XaiVoiceAgentProvider implements RealtimeProvider {
         }
       });
 
-      setTimeout(() => {
+      session.reconnectTimer = setTimeout(() => {
         if (!session.connected && session.ws === ws) {
           reject(new Error("xAI connection timeout"));
         }
@@ -335,7 +343,7 @@ export class XaiVoiceAgentProvider implements RealtimeProvider {
     session.reconnectAttempts++;
     const delay = 1000 * Math.pow(2, session.reconnectAttempts - 1);
 
-    setTimeout(() => {
+    session.reconnectTimer = setTimeout(() => {
       if (session.connected) return;
       this.doConnect(session).catch((err) => {
         this.handleConnectionError(

@@ -140,6 +140,7 @@ describe("RealtimeBridge", () => {
     const manager = new CallManager(config, storePath);
     manager.initialize(provider, realtime, "http://localhost");
 
+
     const callResult = await manager.initiateCall(config.toNumber || "", undefined, {
       mode: "conversation",
     });
@@ -231,6 +232,7 @@ describe("RealtimeBridge", () => {
     const manager = new CallManager(config, storePath);
     manager.initialize(provider, realtime, "http://localhost");
 
+
     const callResult = await manager.initiateCall(config.toNumber || "", undefined, {
       mode: "conversation",
     });
@@ -296,4 +298,84 @@ describe("RealtimeBridge", () => {
     bridge.closeAll();
     await rm(tmpDir, { recursive: true, force: true });
   });
+
+  it("buffers partial outbound audio and only sends full 160-byte frames", async () => {
+    const tmpDir = await mkdtemp(path.join(os.tmpdir(), "voice-call-ws-bridge-"));
+    const storePath = path.join(tmpDir, "store");
+    const config = createConfig(storePath);
+
+    const callSid = "CA_PARTIAL";
+    const streamSid = "MZ_STREAM";
+
+    const provider = createProvider(callSid);
+    const realtime = new MockRealtimeProvider();
+
+    const manager = new CallManager(config, storePath);
+    manager.initialize(provider, realtime, "http://localhost");
+
+    await manager.initiateCall(config.toNumber || "", undefined, { mode: "conversation" });
+
+    const bridge = new RealtimeBridge({ manager, realtime });
+
+    const server = createServer((req, res) => {
+      res.statusCode = 200;
+      res.end("ok");
+    });
+
+    server.on("upgrade", (req, socket, head) => {
+      bridge.handleUpgrade(req, socket, head);
+    });
+
+    const port = await listenOnEphemeralPort(server);
+
+    const ws = new WebSocket(`ws://127.0.0.1:${port}`);
+    const outbound: any[] = [];
+
+    await new Promise<void>((resolve, reject) => {
+      ws.on("open", () => resolve());
+      ws.on("error", reject);
+    });
+
+    ws.on("message", (data) => {
+      try {
+        outbound.push(JSON.parse(String(data)));
+      } catch {
+        // ignore
+      }
+    });
+
+    // Start Twilio stream.
+    ws.send(
+      JSON.stringify({
+        event: "start",
+        streamSid,
+        start: { streamSid, callSid },
+      }),
+    );
+
+    // Wait briefly for session setup.
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Send 100 bytes, then 100 bytes: should produce exactly one 160-byte frame.
+    realtime.triggerAudio(callSid, Buffer.alloc(100, 0x11));
+    await new Promise((r) => setTimeout(r, 40));
+    const mediaBefore = outbound.filter((m) => m?.event === "media");
+    expect(mediaBefore.length).toBe(0);
+
+    realtime.triggerAudio(callSid, Buffer.alloc(100, 0x22));
+    await new Promise((r) => setTimeout(r, 80));
+
+    const media = outbound.filter((m) => m?.event === "media");
+    expect(media.length).toBeGreaterThanOrEqual(1);
+
+    const payload = media[0]?.media?.payload;
+    expect(typeof payload).toBe("string");
+    const decoded = Buffer.from(payload, "base64");
+    expect(decoded.length).toBe(160);
+
+    ws.close();
+    server.close();
+    await rm(tmpDir, { recursive: true, force: true });
+  });
+
 });

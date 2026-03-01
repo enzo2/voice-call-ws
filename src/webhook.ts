@@ -102,7 +102,10 @@ export class VoiceCallWebhookServer {
   ): Promise<void> {
     const url = new URL(req.url || "/", `http://${req.headers.host}`);
 
-    if (!url.pathname.startsWith(webhookPath)) {
+    const normalizedPath = url.pathname.replace(/\/+$/, "");
+    const normalizedWebhookPath = webhookPath.replace(/\/+$/, "");
+
+    if (normalizedPath !== normalizedWebhookPath) {
       res.statusCode = 404;
       res.end("Not Found");
       return;
@@ -163,12 +166,35 @@ export class VoiceCallWebhookServer {
   /**
    * Read request body as string.
    */
-  private readBody(req: http.IncomingMessage): Promise<string> {
+    private readBody(req: http.IncomingMessage): Promise<string> {
+    const MAX_BYTES = 256 * 1024; // 256KB
+
     return new Promise((resolve, reject) => {
       const chunks: Buffer[] = [];
-      req.on("data", (chunk) => chunks.push(chunk));
-      req.on("end", () => resolve(Buffer.concat(chunks).toString("utf-8")));
-      req.on("error", reject);
+      let total = 0;
+
+      const timer = setTimeout(() => {
+        reject(new Error("Request body read timeout"));
+      }, 10_000);
+
+      req.on("data", (chunk: Buffer) => {
+        total += chunk.length;
+        if (total > MAX_BYTES) {
+          clearTimeout(timer);
+          reject(new Error("Request body too large"));
+          req.destroy();
+          return;
+        }
+        chunks.push(chunk);
+      });
+      req.on("end", () => {
+        clearTimeout(timer);
+        resolve(Buffer.concat(chunks).toString("utf-8"));
+      });
+      req.on("error", (err) => {
+        clearTimeout(timer);
+        reject(err);
+      });
     });
   }
 }
