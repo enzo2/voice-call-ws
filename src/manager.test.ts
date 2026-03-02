@@ -263,4 +263,109 @@ describe("CallManager", () => {
 
     await rm(tmpDir, { recursive: true, force: true });
   });
+
+  it("keeps providerCallId/terminal fields stable across late or mismatched events", async () => {
+    const tmpDir = await mkdtemp(path.join(os.tmpdir(), "voice-call-ws-stability-"));
+    const storePath = path.join(tmpDir, "store");
+    const config = createConfig(storePath);
+
+    const providerCallId = "CA_STABLE";
+    const provider = createProvider(providerCallId);
+    const realtime = createRealtime([]);
+
+    const manager = new CallManager(config, storePath);
+    manager.initialize(provider, realtime, "http://localhost");
+
+    const callResult = await manager.initiateCall(config.toNumber || "", undefined, {
+      mode: "conversation",
+    });
+    expect(callResult.success).toBe(true);
+
+    const base = manager.getCall(callResult.callId)!;
+
+    manager.processEvent({
+      id: "evt-ans-1",
+      type: "call.answered",
+      callId: callResult.callId,
+      providerCallId,
+      timestamp: 1000,
+      direction: "outbound",
+      from: base.from,
+      to: base.to,
+    });
+
+    // Mismatched providerCallId should be ignored (immutability)
+    manager.processEvent({
+      id: "evt-wrong-sid",
+      type: "call.ringing",
+      callId: callResult.callId,
+      providerCallId: "CA_OTHER",
+      timestamp: 1100,
+      direction: "outbound",
+      from: base.from,
+      to: base.to,
+    });
+
+    // Duplicate answered should not overwrite answeredAt
+    manager.processEvent({
+      id: "evt-ans-2",
+      type: "call.answered",
+      callId: callResult.callId,
+      providerCallId,
+      timestamp: 2000,
+      direction: "outbound",
+      from: base.from,
+      to: base.to,
+    });
+
+    const active = manager.getCall(callResult.callId)!;
+    expect(active.providerCallId).toBe(providerCallId);
+    expect(active.answeredAt).toBe(1000);
+    expect(manager.getCallByProviderCallId("CA_OTHER")).toBeUndefined();
+
+    // End call once
+    manager.processEvent({
+      id: "evt-end-1",
+      type: "call.ended",
+      callId: callResult.callId,
+      providerCallId,
+      timestamp: 3000,
+      reason: "hangup-bot",
+      direction: "outbound",
+      from: base.from,
+      to: base.to,
+    });
+
+    // Late events should not resurrect / mutate terminal call
+    manager.processEvent({
+      id: "evt-late-ringing",
+      type: "call.ringing",
+      callId: callResult.callId,
+      providerCallId,
+      timestamp: 4000,
+      direction: "outbound",
+      from: base.from,
+      to: base.to,
+    });
+
+    manager.processEvent({
+      id: "evt-end-2",
+      type: "call.ended",
+      callId: callResult.callId,
+      providerCallId,
+      timestamp: 5000,
+      reason: "completed",
+      direction: "outbound",
+      from: base.from,
+      to: base.to,
+    });
+
+    const ended = manager.getCall(callResult.callId)!;
+    expect(ended.state).toBe("hangup-bot");
+    expect(ended.endedAt).toBe(3000);
+    expect(ended.endReason).toBe("hangup-bot");
+
+    await rm(tmpDir, { recursive: true, force: true });
+  });
+
 });

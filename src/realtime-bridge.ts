@@ -26,6 +26,7 @@ interface BridgeSession {
   outboundAudioQueueHead: number;
   outboundAudioRemainder: Buffer;
   outboundAudioSending: boolean;
+  outboundLastSendAtMs: number;
   outboundTimer?: NodeJS.Timeout | null;
 }
 
@@ -102,7 +103,7 @@ export class RealtimeBridge {
       // Providers may emit larger chunks and may emit faster than real time.
       // If we push too fast, Twilio buffers and playback becomes delayed/"slow".
       const FRAME_BYTES = 160;
-      const MAX_QUEUE_FRAMES = 250; // ~5 seconds of audio at 20ms/frame
+      const MAX_QUEUE_FRAMES = 500; // ~10 seconds of audio at 20ms/frame
 
       // Carry remainder across callbacks so we always send full 20ms frames.
       let buf =
@@ -117,18 +118,18 @@ export class RealtimeBridge {
       session.outboundAudioRemainder = buf.subarray(fullLen);
 
       // Bound the queue to avoid unbounded latency/memory growth.
+      // IMPORTANT: drop NEWEST frames (tail), not the oldest pending audio.
+      // Dropping oldest creates audible "skips" mid-utterance; dropping newest
+      // tends to truncate the end instead, which is less jarring.
       const queued = session.outboundAudioQueue.length - session.outboundAudioQueueHead;
       if (queued > MAX_QUEUE_FRAMES) {
         const drop = queued - MAX_QUEUE_FRAMES;
-        session.outboundAudioQueueHead += drop;
-        if (session.outboundAudioQueueHead > 1024) {
-          session.outboundAudioQueue = session.outboundAudioQueue.slice(
-            session.outboundAudioQueueHead,
-          );
-          session.outboundAudioQueueHead = 0;
+        const targetLen = session.outboundAudioQueueHead + MAX_QUEUE_FRAMES;
+        if (session.outboundAudioQueue.length > targetLen) {
+          session.outboundAudioQueue.length = targetLen;
         }
         this.config.logger?.warn?.(
-          `[voice-call-ws] Outbound audio queue overflow; dropped ${drop} frames`,
+          `[voice-call-ws] Outbound audio queue overflow; dropped ${drop} newest frames`,
         );
       }
 
@@ -165,18 +166,62 @@ export class RealtimeBridge {
         session.outboundAudioQueueHead = 0;
         session.outboundAudioRemainder = Buffer.alloc(0);
         session.outboundAudioSending = false;
+    session.outboundLastSendAtMs = Date.now();
+        session.outboundLastSendAtMs = Date.now();
         return;
       }
 
-      const frame =
-        session.outboundAudioQueueHead < session.outboundAudioQueue.length
-          ? session.outboundAudioQueue[session.outboundAudioQueueHead]
-          : undefined;
+      const now = Date.now();
+      const FRAME_MS = 20;
+      const MAX_FRAMES_PER_TICK = 10;
 
-      if (!frame) {
+      let behindFrames = Math.floor((now - session.outboundLastSendAtMs) / FRAME_MS);
+      if (behindFrames < 0) behindFrames = 0;
+      let framesToSend = Math.min(MAX_FRAMES_PER_TICK, behindFrames + 1);
+
+      while (framesToSend > 0) {
+        const frame =
+          session.outboundAudioQueueHead < session.outboundAudioQueue.length
+            ? session.outboundAudioQueue[session.outboundAudioQueueHead]
+            : undefined;
+
+        if (!frame) break;
+
+        session.outboundAudioQueueHead += 1;
+
+        try {
+          // track="outbound" is required for bidirectional streams.
+          session.twilioWs.send(
+            JSON.stringify({
+              event: "media",
+              streamSid: session.streamSid,
+              media: { payload: frame.toString("base64"), track: "outbound" },
+            }),
+          );
+        } catch (err) {
+          console.error("[voice-call-ws] Failed to send outbound audio:", err);
+          if (session.outboundTimer) clearInterval(session.outboundTimer);
+          session.outboundTimer = undefined;
+          session.outboundAudioQueue.length = 0;
+          session.outboundAudioQueueHead = 0;
+          session.outboundAudioRemainder = Buffer.alloc(0);
+          session.outboundAudioSending = false;
+    session.outboundLastSendAtMs = Date.now();
+          session.outboundLastSendAtMs = Date.now();
+          return;
+        }
+
+        session.outboundLastSendAtMs += FRAME_MS;
+        framesToSend -= 1;
+      }
+
+      const hasMore =
+        session.outboundAudioQueueHead < session.outboundAudioQueue.length;
+      if (!hasMore) {
         if (session.outboundTimer) clearInterval(session.outboundTimer);
         session.outboundTimer = undefined;
         session.outboundAudioSending = false;
+    session.outboundLastSendAtMs = Date.now();
 
         // Compact the queue when idle.
         if (session.outboundAudioQueueHead > 0) {
@@ -186,27 +231,6 @@ export class RealtimeBridge {
           session.outboundAudioQueueHead = 0;
         }
         return;
-      }
-
-      session.outboundAudioQueueHead += 1;
-
-      try {
-        // track="outbound" is required for bidirectional streams.
-        session.twilioWs.send(
-          JSON.stringify({
-            event: "media",
-            streamSid: session.streamSid,
-            media: { payload: frame.toString("base64"), track: "outbound" },
-          }),
-        );
-      } catch (err) {
-        console.error("[voice-call-ws] Failed to send outbound audio:", err);
-        if (session.outboundTimer) clearInterval(session.outboundTimer);
-        session.outboundTimer = undefined;
-        session.outboundAudioQueue.length = 0;
-        session.outboundAudioQueueHead = 0;
-        session.outboundAudioRemainder = Buffer.alloc(0);
-        session.outboundAudioSending = false;
       }
 
       // Periodic compaction to prevent unbounded array growth.
@@ -348,6 +372,7 @@ export class RealtimeBridge {
       outboundAudioQueueHead: 0,
       outboundAudioRemainder: Buffer.alloc(0),
       outboundAudioSending: false,
+      outboundLastSendAtMs: Date.now(),
     };
 
     this.sessions.set(streamSid, session);
@@ -367,6 +392,7 @@ export class RealtimeBridge {
     session.outboundAudioQueueHead = 0;
     session.outboundAudioRemainder = Buffer.alloc(0);
     session.outboundAudioSending = false;
+    session.outboundLastSendAtMs = Date.now();
 
     this.config.realtime.disconnect(session.callId).catch((err) => {
       console.error("[voice-call-ws] Failed to disconnect realtime:", err);

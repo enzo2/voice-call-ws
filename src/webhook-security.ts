@@ -92,8 +92,14 @@ export function reconstructWebhookUrl(ctx: WebhookContext): string {
     // URL parsing failed
   }
 
-  // Remove port from host (ngrok URLs don't have ports)
-  const host = forwardedHost.split(":")[0] || forwardedHost;
+  const forwardedPort = getHeader(headers, "x-forwarded-port");
+  let host = forwardedHost;
+  if (forwardedPort && host && !host.includes(":")) {
+    const defaultPort = proto === "https" ? "443" : "80";
+    if (forwardedPort !== defaultPort) {
+      host = `${host}:${forwardedPort}`;
+    }
+  }
 
   return `${proto}://${host}${path}`;
 }
@@ -109,7 +115,10 @@ function buildTwilioVerificationUrl(
   try {
     const base = new URL(publicUrl);
     const requestUrl = new URL(ctx.url);
-    base.pathname = requestUrl.pathname;
+    // Keep configured publicUrl path unless it is root.
+    if (!base.pathname || base.pathname === "/") {
+      base.pathname = requestUrl.pathname;
+    }
     base.search = requestUrl.search;
     return base.toString();
   } catch {

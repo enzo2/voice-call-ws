@@ -394,15 +394,19 @@ export class CallManager {
       return;
     }
 
-    if (event.providerCallId && call.providerCallId !== event.providerCallId) {
-      const previousProviderCallId = call.providerCallId;
-      call.providerCallId = event.providerCallId;
-      this.providerCallIdMap.set(event.providerCallId, call.callId);
-      if (previousProviderCallId) {
-        const mapped = this.providerCallIdMap.get(previousProviderCallId);
-        if (mapped === call.callId) {
-          this.providerCallIdMap.delete(previousProviderCallId);
-        }
+    if (TerminalStates.has(call.state)) {
+      // Ignore late/duplicate events for terminal calls to keep final fields stable.
+      return;
+    }
+
+    if (event.providerCallId) {
+      if (!call.providerCallId) {
+        call.providerCallId = event.providerCallId;
+        this.providerCallIdMap.set(event.providerCallId, call.callId);
+      } else if (call.providerCallId !== event.providerCallId) {
+        console.warn(
+          `[voice-call-ws] Ignoring providerCallId mismatch for call ${call.callId}: expected ${call.providerCallId}, got ${event.providerCallId}`,
+        );
       }
     }
 
@@ -420,9 +424,11 @@ export class CallManager {
         this.transitionState(call, "ringing");
         break;
       case "call.answered":
-        call.answeredAt = event.timestamp;
+        if (!call.answeredAt) {
+          call.answeredAt = event.timestamp;
+          this.startMaxDurationTimer(call.callId);
+        }
         this.transitionState(call, "answered");
-        this.startMaxDurationTimer(call.callId);
         break;
       case "call.active":
         this.transitionState(call, "active");
@@ -643,7 +649,7 @@ export class CallManager {
 
   private disconnectRealtime(call: CallRecord, event?: NormalizedEvent): void {
     const realtimeCallId =
-      event?.providerCallId ?? call.providerCallId ?? call.callId;
+      call.providerCallId ?? event?.providerCallId ?? call.callId;
     this.disconnectRealtimeById(realtimeCallId);
   }
 

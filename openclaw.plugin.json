@@ -114,6 +114,14 @@
     "store": {
       "label": "Call Log Store Path",
       "advanced": true
+    },
+    "voiceAgent.ownerName": {
+      "label": "Owner Name",
+      "advanced": true
+    },
+    "voiceAgent.agentName": {
+      "label": "Agent Name",
+      "advanced": true
     }
   },
   "configSchema": {
@@ -369,6 +377,18 @@
       },
       "store": {
         "type": "string"
+      },
+      "voiceAgent": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "ownerName": {
+            "type": "string"
+          },
+          "agentName": {
+            "type": "string"
+          }
+        }
       }
     }
   }

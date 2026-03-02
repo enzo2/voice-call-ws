@@ -354,6 +354,12 @@ export function validateVoiceCallWsConfig(config: VoiceCallWsConfig): {
     errors.push("plugins.entries.voice-call-ws.config.fromNumber is required");
   }
 
+  if (!config.voiceAgent?.ownerName) {
+    errors.push(
+      "plugins.entries.voice-call-ws.config.voiceAgent.ownerName is required",
+    );
+  }
+
   if (config.telephony.provider !== "twilio") {
     errors.push("plugins.entries.voice-call-ws.config.telephony.provider must be twilio");
   }
