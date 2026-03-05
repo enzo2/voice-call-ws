@@ -39,8 +39,8 @@ Put under `plugins.entries.voice-call-ws.config`:
   telephony: {
     provider: "twilio",
     twilio: {
-      accountSid: "ACxxxxxxxx",
-      authToken: "your_token"
+      accountSid: "<TWILIO_ACCOUNT_SID>",
+      authToken: "<TWILIO_AUTH_TOKEN>"
     }
   },
 
@@ -51,7 +51,7 @@ Put under `plugins.entries.voice-call-ws.config`:
     provider: "xai-voice-agent",
     streamPath: "/voice/stream",
     xai: {
-      apiKey: "your-xai-api-key",
+      apiKey: "<XAI_API_KEY>",
       voice: "Ara",
       vadThreshold: 0.5
     }

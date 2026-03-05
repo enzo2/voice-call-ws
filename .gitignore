@@ -1,4 +1,17 @@
 node_modules/
 dist/
+coverage/
 *.log
 .DS_Store
+
+# Secrets / local runtime artifacts
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.crt
+
+# Call logs
+calls.jsonl
+*.jsonl
