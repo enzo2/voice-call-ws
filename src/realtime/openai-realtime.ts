@@ -32,8 +32,24 @@ type OpenAIEvent = {
       audio?: string;
     }>;
   };
-  content?: Array<{ type?: string; text?: string; transcript?: string }>;
+  response?: {
+    id?: string;
+    output?: Array<{
+      id?: string;
+      type?: string;
+      name?: string;
+      call_id?: string;
+      arguments?: string | Record<string, unknown>;
+      content?: Array<{
+        type?: string;
+        text?: string;
+        transcript?: string;
+      }>;
+    }>;
+  };
+  content?: Array<{ type?: string; text?: string; transcript?: string; audio?: string }>;
   transcript?: string;
+  text?: string;
   delta?: string;
   audio?: string;
   error?: unknown;
@@ -59,10 +75,14 @@ interface OpenAISession {
   outputTranscriptByResponseId: Map<string, string>;
   // If the server rejects a session.update parameter, keep a blocklist.
   blockedSessionParams: Set<string>;
+  // Buffer function-call argument deltas until a done/final event arrives.
+  functionCallArgsByCallId: Map<string, string>;
+  // Prevent duplicate function-call callbacks across equivalent event aliases.
+  emittedFunctionCallIds: Set<string>;
 }
 
 const TWILIO_SAMPLE_RATE = 8000;
-const OPENAI_INPUT_SAMPLE_RATE = 16000;
+const OPENAI_INPUT_SAMPLE_RATE = 24000;
 const OPENAI_OUTPUT_SAMPLE_RATE = 24000;
 const DEFAULT_MODEL = "gpt-realtime-mini";
 
@@ -120,6 +140,8 @@ export class OpenAIRealtimeProvider implements RealtimeProvider {
       hasInputAudio: false,
       outputTranscriptByResponseId: new Map(),
       blockedSessionParams: new Set(),
+      functionCallArgsByCallId: new Map(),
+      emittedFunctionCallIds: new Set(),
     };
 
     this.sessions.set(callId, session);
@@ -271,7 +293,6 @@ export class OpenAIRealtimeProvider implements RealtimeProvider {
         {
           headers: {
             Authorization: `Bearer ${this.apiKey}`,
-            "OpenAI-Beta": "realtime=v1",
           },
         },
       );
@@ -358,6 +379,8 @@ export class OpenAIRealtimeProvider implements RealtimeProvider {
         break;
       }
       case "conversation.item.created":
+      case "conversation.item.added":
+      case "conversation.item.done":
         this.handleConversationItemCreated(session, message);
         break;
       case "response.output_audio.delta":
@@ -377,21 +400,44 @@ export class OpenAIRealtimeProvider implements RealtimeProvider {
         }
         break;
       }
+      case "response.output_text.delta": {
+        const delta = this.readTranscript(message.delta);
+        if (delta) {
+          const responseId = (message.response_id ?? "").trim();
+          const key = responseId || "__no_response_id__";
+          const prev = session.outputTranscriptByResponseId.get(key) ?? "";
+          session.outputTranscriptByResponseId.set(key, prev + delta);
+        }
+        break;
+      }
       case "response.output_audio_transcript.done":
-      case "response.audio_transcript.done": {
+      case "response.audio_transcript.done":
+      case "response.output_text.done": {
         const responseId = (message.response_id ?? "").trim();
         const key = responseId || "__no_response_id__";
         const buffered = session.outputTranscriptByResponseId.get(key) ?? "";
         session.outputTranscriptByResponseId.delete(key);
 
-        const transcript = this.readTranscript(message.transcript) ?? this.readTranscript(buffered);
+        const transcript =
+          this.readTranscript(message.transcript) ??
+          this.readTranscript(message.text) ??
+          this.readTranscript(buffered);
         if (transcript) {
           this.onOutputTranscriptCallback?.(session.callId, transcript);
         }
         break;
       }
+      case "response.function_call_arguments.delta":
+        this.handleFunctionCallDelta(session, message);
+        break;
       case "response.function_call_arguments.done":
         this.handleFunctionCallDone(session, message);
+        break;
+      case "response.output_item.done":
+        this.handleConversationItemCreated(session, message);
+        break;
+      case "response.done":
+        this.handleResponseDone(session, message);
         break;
       case "error": {
         // Attempt to auto-recover from session.update "unknown_parameter" errors
@@ -448,10 +494,11 @@ export class OpenAIRealtimeProvider implements RealtimeProvider {
           ? item.arguments
           : JSON.stringify(item.arguments ?? {});
 
-      this.onFunctionCallCallback?.(session.callId, {
+      this.emitFunctionCall(session, {
         name,
         arguments: args,
         callId,
+        responseId: message.response_id,
       });
       return;
     }
@@ -468,17 +515,58 @@ export class OpenAIRealtimeProvider implements RealtimeProvider {
     }
   }
 
+  private handleFunctionCallDelta(session: OpenAISession, message: OpenAIEvent): void {
+    const callId = message.call_id?.trim();
+    if (!callId) return;
+    const delta = message.delta ?? "";
+    if (!delta) return;
+    const prev = session.functionCallArgsByCallId.get(callId) ?? "";
+    session.functionCallArgsByCallId.set(callId, prev + delta);
+  }
+
   private handleFunctionCallDone(session: OpenAISession, message: OpenAIEvent): void {
     const name = message.name?.trim();
     const callId = message.call_id?.trim();
     if (!name || !callId) return;
+    const bufferedArgs = session.functionCallArgsByCallId.get(callId);
+    session.functionCallArgsByCallId.delete(callId);
 
-    this.onFunctionCallCallback?.(session.callId, {
+    this.emitFunctionCall(session, {
       name,
-      arguments: message.arguments ?? "{}",
+      arguments: message.arguments ?? bufferedArgs ?? "{}",
       callId,
       responseId: message.response_id,
     });
+  }
+
+  private handleResponseDone(session: OpenAISession, message: OpenAIEvent): void {
+    const output = message.response?.output;
+    if (!output || output.length === 0) return;
+
+    for (const item of output) {
+      if (item.type !== "function_call") continue;
+      const name = item.name?.trim();
+      const callId = (item.call_id || item.id || "").trim();
+      if (!name || !callId) continue;
+      const args =
+        typeof item.arguments === "string"
+          ? item.arguments
+          : JSON.stringify(item.arguments ?? {});
+      this.emitFunctionCall(session, {
+        name,
+        arguments: args,
+        callId,
+        responseId: message.response?.id,
+      });
+    }
+  }
+
+  private emitFunctionCall(session: OpenAISession, call: RealtimeFunctionCall): void {
+    if (!call.callId) return;
+    if (session.emittedFunctionCallIds.has(call.callId)) return;
+    session.emittedFunctionCallIds.add(call.callId);
+    session.functionCallArgsByCallId.delete(call.callId);
+    this.onFunctionCallCallback?.(session.callId, call);
   }
 
   private handleAudioChunk(session: OpenAISession, message: OpenAIEvent): void {
@@ -564,14 +652,26 @@ export class OpenAIRealtimeProvider implements RealtimeProvider {
   ): Record<string, unknown> {
     // Keep session.update minimal and compatible.
     const session: Record<string, unknown> = {
-      voice: this.voice,
+      type: "realtime",
       instructions: options?.instructions ?? "",
-      input_audio_format: "pcm16",
-      output_audio_format: "pcm16",
-      turn_detection: { type: "server_vad" },
+      output_modalities: ["audio"],
+      audio: {
+        input: {
+          format: {
+            type: "audio/pcm",
+            rate: OPENAI_INPUT_SAMPLE_RATE,
+          },
+          turn_detection: { type: "semantic_vad" },
+        },
+        output: {
+          format: { type: "audio/pcm" },
+          voice: this.voice,
+        },
+      },
     };
 
     if (this.inputTranscription) {
+      // Keep current transcription behavior for existing callers.
       session.input_audio_transcription = { model: "gpt-4o-mini-transcribe" };
     }
 
@@ -586,12 +686,29 @@ export class OpenAIRealtimeProvider implements RealtimeProvider {
     // Apply blocklist of rejected params (defensive hardening).
     if (sessionState?.blockedSessionParams?.size) {
       for (const blocked of sessionState.blockedSessionParams) {
-        const key = blocked.replace(/^session\./, "");
-        delete (session as any)[key];
+        const key = blocked.replace(/^session\./, "").trim();
+        if (!key) continue;
+        this.deletePath(session, key.split("."));
       }
     }
 
     return { type: "session.update", session };
+  }
+
+  private deletePath(target: Record<string, unknown>, path: string[]): void {
+    if (path.length === 0) return;
+
+    let current: Record<string, unknown> | null = target;
+    for (let i = 0; i < path.length - 1; i++) {
+      const segment = path[i];
+      const next = current[segment];
+      if (!next || typeof next !== "object" || Array.isArray(next)) {
+        return;
+      }
+      current = next as Record<string, unknown>;
+    }
+
+    delete current[path[path.length - 1]];
   }
 
   private buildToolDefinitions(
