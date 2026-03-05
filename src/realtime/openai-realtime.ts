@@ -55,6 +55,10 @@ interface OpenAISession {
   outputResampler: LibSampleRateInstance | null;
   sessionOptions?: RealtimeSessionOptions;
   hasInputAudio: boolean;
+  // Buffer assistant transcript deltas so we don't persist word fragments.
+  outputTranscriptByResponseId: Map<string, string>;
+  // If the server rejects a session.update parameter, keep a blocklist.
+  blockedSessionParams: Set<string>;
 }
 
 const TWILIO_SAMPLE_RATE = 8000;
@@ -114,6 +118,8 @@ export class OpenAIRealtimeProvider implements RealtimeProvider {
       outputResampler: null,
       sessionOptions: options,
       hasInputAudio: false,
+      outputTranscriptByResponseId: new Map(),
+      blockedSessionParams: new Set(),
     };
 
     this.sessions.set(callId, session);
@@ -153,7 +159,7 @@ export class OpenAIRealtimeProvider implements RealtimeProvider {
     session.sessionOptions = options;
 
     if (session.ws?.readyState === WebSocket.OPEN) {
-      session.ws.send(JSON.stringify(this.buildSessionUpdatePayload(options)));
+      session.ws.send(JSON.stringify(this.buildSessionUpdatePayload(options, session)));
     }
   }
 
@@ -288,7 +294,7 @@ export class OpenAIRealtimeProvider implements RealtimeProvider {
         }
 
         ws.send(
-          JSON.stringify(this.buildSessionUpdatePayload(session.sessionOptions)),
+          JSON.stringify(this.buildSessionUpdatePayload(session.sessionOptions, session)),
         );
         resolve();
       });
@@ -361,15 +367,24 @@ export class OpenAIRealtimeProvider implements RealtimeProvider {
         break;
       case "response.output_audio_transcript.delta":
       case "response.audio_transcript.delta": {
-        const partial = this.readTranscript(message.delta);
-        if (partial) {
-          this.onOutputTranscriptCallback?.(session.callId, partial);
+        // Buffer assistant transcript deltas; do not emit partials as final transcript entries.
+        const delta = this.readTranscript(message.delta);
+        if (delta) {
+          const responseId = (message.response_id ?? "").trim();
+          const key = responseId || "__no_response_id__";
+          const prev = session.outputTranscriptByResponseId.get(key) ?? "";
+          session.outputTranscriptByResponseId.set(key, prev + delta);
         }
         break;
       }
       case "response.output_audio_transcript.done":
       case "response.audio_transcript.done": {
-        const transcript = this.readTranscript(message.transcript);
+        const responseId = (message.response_id ?? "").trim();
+        const key = responseId || "__no_response_id__";
+        const buffered = session.outputTranscriptByResponseId.get(key) ?? "";
+        session.outputTranscriptByResponseId.delete(key);
+
+        const transcript = this.readTranscript(message.transcript) ?? this.readTranscript(buffered);
         if (transcript) {
           this.onOutputTranscriptCallback?.(session.callId, transcript);
         }
@@ -378,12 +393,39 @@ export class OpenAIRealtimeProvider implements RealtimeProvider {
       case "response.function_call_arguments.done":
         this.handleFunctionCallDone(session, message);
         break;
-      case "error":
-        this.onErrorCallback?.(
-          session.callId,
-          `[openai-realtime] ${JSON.stringify(message.error ?? "unknown error")}`,
-        );
+      case "error": {
+        // Attempt to auto-recover from session.update "unknown_parameter" errors
+        // by blocklisting the rejected param and resending a minimal session.update.
+        const errObj = message.error ?? "unknown error";
+        const errJson = typeof errObj === "object" ? JSON.stringify(errObj) : String(errObj);
+
+        // Try to parse shape: { code, message, param, type }
+        let code: string | undefined;
+        let param: string | undefined;
+        try {
+          const parsed = typeof errObj === "object" ? (errObj as any) : JSON.parse(String(errObj));
+          code = typeof parsed?.code === "string" ? parsed.code : undefined;
+          param = typeof parsed?.param === "string" ? parsed.param : undefined;
+        } catch {
+          // ignore
+        }
+
+        if (code === "unknown_parameter" && param && param.startsWith("session.")) {
+          session.blockedSessionParams.add(param);
+          // Best-effort re-send updated session without the rejected field.
+          try {
+            session.ws?.send(
+              JSON.stringify(this.buildSessionUpdatePayload(session.sessionOptions, session)),
+            );
+            return;
+          } catch {
+            // fall through
+          }
+        }
+
+        this.onErrorCallback?.(session.callId, `[openai-realtime] ${errJson}`);
         break;
+      }
       default:
         break;
     }
@@ -518,15 +560,15 @@ export class OpenAIRealtimeProvider implements RealtimeProvider {
 
   private buildSessionUpdatePayload(
     options?: RealtimeSessionOptions,
+    sessionState?: Pick<OpenAISession, "blockedSessionParams">,
   ): Record<string, unknown> {
+    // Keep session.update minimal and compatible.
     const session: Record<string, unknown> = {
       voice: this.voice,
       instructions: options?.instructions ?? "",
       input_audio_format: "pcm16",
       output_audio_format: "pcm16",
-      turn_detection: {
-        type: "server_vad",
-      },
+      turn_detection: { type: "server_vad" },
     };
 
     if (this.inputTranscription) {
@@ -534,18 +576,22 @@ export class OpenAIRealtimeProvider implements RealtimeProvider {
     }
 
     // NOTE: OpenAI Realtime session.update currently rejects `session.output_audio_transcription`.
-    // Output transcripts still arrive via `response.*_transcript.*` events when available,
-    // so we do not request/enable output transcription here.
+    // Output transcripts still arrive via `response.*_transcript.*` events when available.
 
     const tools = this.buildToolDefinitions(options?.tools);
     if (tools) {
       session.tools = tools;
     }
 
-    return {
-      type: "session.update",
-      session,
-    };
+    // Apply blocklist of rejected params (defensive hardening).
+    if (sessionState?.blockedSessionParams?.size) {
+      for (const blocked of sessionState.blockedSessionParams) {
+        const key = blocked.replace(/^session\./, "");
+        delete (session as any)[key];
+      }
+    }
+
+    return { type: "session.update", session };
   }
 
   private buildToolDefinitions(

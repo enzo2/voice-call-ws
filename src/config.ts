@@ -268,12 +268,15 @@ export const PrivacyConfigSchema = z
     allowTranscriptInStatus: z.boolean().default(true),
     /** Mask phone numbers in status payloads */
     redactPhoneNumbersInStatus: z.boolean().default(true),
+    /** Mask phone numbers in persisted call records (calls.jsonl) */
+    redactPhoneNumbersInLogs: z.boolean().default(true),
   })
   .strict()
   .default({
     persistTranscript: false,
     allowTranscriptInStatus: true,
     redactPhoneNumbersInStatus: true,
+    redactPhoneNumbersInLogs: true,
   });
 export type PrivacyConfig = z.infer<typeof PrivacyConfigSchema>;
 

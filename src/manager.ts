@@ -33,6 +33,10 @@ export class CallManager {
   private providerCallIdMap = new Map<string, CallId>(); // providerCallId -> internal callId
   private recentCalls = new Map<CallId, { call: CallRecord; expiresAt: number }>();
   private recentCallsTtlMs = 10 * 60 * 1000;
+
+  // Recent event ring buffer for debugging. Not persisted by default.
+  private recentEvents = new Map<CallId, Array<{ t: number; type: string; detail?: string }>>();
+  private recentEventsMax = 40;
   private processedEventIds = new Map<string, number>();
   private processedEventTtlMs = 60 * 60 * 1000;
   private processedEventMaxSize = 5000;
@@ -377,6 +381,9 @@ export class CallManager {
    * Process a normalized call event.
    */
   processEvent(event: NormalizedEvent): void {
+    // Track recent events for post-mortem debugging.
+    this.recordRecentEvent(event);
+
     const now = Date.now();
     this.pruneProcessedEventIds(now);
     if (this.processedEventIds.has(event.id)) return;
@@ -475,10 +482,29 @@ export class CallManager {
         break;
       case "call.error":
         if (!event.retryable) {
-          // Persist the error detail for debugging (safe; does not include audio or transcripts).
+          // Persist structured error detail for debugging (safe; does not include audio).
           call.metadata = call.metadata ?? {};
-          call.metadata.lastError = String(event.error ?? "unknown error");
+
+          const raw = String(event.error ?? "unknown error");
+          const details: any = { raw };
+
+          // Try to extract JSON blob from strings like: "[openai-realtime] {...json...}".
+          const m = raw.match(/\{[\s\S]*\}$/);
+          if (m) {
+            try {
+              const parsed = JSON.parse(m[0]);
+              details.type = parsed?.type;
+              details.code = parsed?.code;
+              details.message = parsed?.message;
+              details.param = parsed?.param;
+            } catch {
+              // ignore
+            }
+          }
+
+          call.metadata.lastError = details;
           call.metadata.lastErrorAt = event.timestamp;
+          call.metadata.recentEventSummary = this.drainRecentEventSummary(call.callId);
 
           this.disconnectRealtime(call, event);
           call.endedAt = event.timestamp;
@@ -649,6 +675,32 @@ export class CallManager {
     waiter.reject(new Error(reason));
   }
 
+  private recordRecentEvent(event: NormalizedEvent): void {
+    const callId = event.callId;
+    const list = this.recentEvents.get(callId) ?? [];
+    const detail =
+      event.type === "call.error"
+        ? String((event as any).error ?? "")
+        : event.type === "call.speech"
+          ? String((event as any).transcript ?? "")
+          : undefined;
+    list.push({ t: event.timestamp, type: event.type, detail: detail?.slice(0, 160) });
+    while (list.length > this.recentEventsMax) list.shift();
+    this.recentEvents.set(callId, list);
+  }
+
+  private drainRecentEventSummary(callId: CallId): string {
+    const list = this.recentEvents.get(callId) ?? [];
+    // Keep it compact.
+    return list
+      .map((e) => {
+        const t = new Date(e.t).toISOString();
+        return `${t} ${e.type}${e.detail ? `: ${e.detail}` : ""}`;
+      })
+      .join("\n")
+      .slice(0, 2000);
+  }
+
   private resolveTranscriptWaiter(callId: CallId, transcript: string): void {
     const waiter = this.transcriptWaiters.get(callId);
     if (!waiter) return;
@@ -681,16 +733,39 @@ export class CallManager {
     return expected === token;
   }
 
+  private redactPhoneNumber(value: string): string {
+    // Keep country code and last 2 digits; mask the rest.
+    const s = value.trim();
+    // Basic E.164-ish: +<digits>
+    const m = s.match(/^\+(\d{1,3})(\d{2,})$/);
+    if (!m) return "[redacted]";
+    const cc = m[1];
+    const rest = m[2];
+    const tail = rest.slice(-2);
+    const masked = "*".repeat(Math.max(0, rest.length - 2)) + tail;
+    return `+${cc}${masked}`;
+  }
+
   private persistCallRecord(call: CallRecord): void {
     const logPath = path.join(this.storePath, "calls.jsonl");
 
     const persistTranscript = this.config.privacy?.persistTranscript ?? false;
-    const record: CallRecord = persistTranscript
+    const redactPhones = this.config.privacy?.redactPhoneNumbersInLogs ?? true;
+
+    const base: CallRecord = persistTranscript
       ? call
       : {
           ...call,
           transcript: [],
         };
+
+    const record: CallRecord = redactPhones
+      ? {
+          ...base,
+          from: this.redactPhoneNumber(base.from),
+          to: this.redactPhoneNumber(base.to),
+        }
+      : base;
 
     const line = `${JSON.stringify(record)}
 `;
