@@ -256,9 +256,21 @@ export class CallManager {
       return;
     }
 
-    // In conversation mode, the "initialMessage" is the System Prompt / Goal
-    // and is handled by the agent's system prompt generation.
-    
+    // In conversation mode, the "initialMessage" is treated as the goal inside the system prompt.
+    // For OpenAI Realtime (and some other providers), the model will not speak first unless we
+    // explicitly create a response. So we trigger an initial response as soon as the media
+    // stream is connected.
+    if (mode === "conversation" && this.realtime) {
+      try {
+        this.realtime.triggerResponse(call.providerCallId || call.callId);
+      } catch (err) {
+        console.warn(
+          `[voice-call-ws] Failed to trigger initial response for ${call.providerCallId}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+      return;
+    }
+
     // In notify mode, we use a direct User command to force the model to speak the notification.
 
     if (mode === "notify" && call.metadata) {
@@ -463,6 +475,11 @@ export class CallManager {
         break;
       case "call.error":
         if (!event.retryable) {
+          // Persist the error detail for debugging (safe; does not include audio or transcripts).
+          call.metadata = call.metadata ?? {};
+          call.metadata.lastError = String(event.error ?? "unknown error");
+          call.metadata.lastErrorAt = event.timestamp;
+
           this.disconnectRealtime(call, event);
           call.endedAt = event.timestamp;
           call.endReason = "error";

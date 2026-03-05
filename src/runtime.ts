@@ -2,6 +2,7 @@ import type { CoreConfig } from "./core-bridge.js";
 import type { VoiceCallWsConfig } from "./config.js";
 import {
   GeminiLiveConfigSchema,
+  OpenAIRealtimeConfigSchema,
   XaiVoiceAgentConfigSchema,
   validateVoiceCallWsConfig,
 } from "./config.js";
@@ -12,6 +13,7 @@ import type { RealtimeProvider } from "./realtime/base.js";
 import { MockRealtimeProvider } from "./realtime/mock.js";
 import { XaiVoiceAgentProvider } from "./realtime/xai-voice-agent.js";
 import { GeminiLiveProvider } from "./realtime/gemini-live.js";
+import { OpenAIRealtimeProvider } from "./realtime/openai-realtime.js";
 import { RealtimeBridge } from "./realtime-bridge.js";
 import { startTunnel, type TunnelResult } from "./tunnel.js";
 import { VoiceCallAgent } from "./voice-agent.js";
@@ -68,6 +70,14 @@ function resolveRealtimeProvider(config: VoiceCallWsConfig): RealtimeProvider {
       process.env.GOOGLE_API_KEY;
     const geminiConfig = GeminiLiveConfigSchema.parse(config.realtime.gemini ?? {});
     return new GeminiLiveProvider(geminiConfig, apiKey);
+  }
+
+  if (config.realtime.provider === "openai-realtime") {
+    const apiKey = config.realtime.openai?.apiKey ?? process.env.OPENAI_API_KEY;
+    const openaiConfig = OpenAIRealtimeConfigSchema.parse(
+      config.realtime.openai ?? {},
+    );
+    return new OpenAIRealtimeProvider(openaiConfig, apiKey);
   }
 
   const apiKey = config.realtime.xai?.apiKey ?? process.env.XAI_API_KEY;

@@ -281,6 +281,7 @@
             "enum": [
               "xai-voice-agent",
               "gemini-live",
+              "openai-realtime",
               "mock"
             ]
           },
@@ -312,6 +313,27 @@
             }
           },
           "gemini": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "apiKey": {
+                "type": "string"
+              },
+              "model": {
+                "type": "string"
+              },
+              "voice": {
+                "type": "string"
+              },
+              "inputTranscription": {
+                "type": "boolean"
+              },
+              "outputTranscription": {
+                "type": "boolean"
+              }
+            }
+          },
+          "openai": {
             "type": "object",
             "additionalProperties": false,
             "properties": {

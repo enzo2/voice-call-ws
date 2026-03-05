@@ -12,6 +12,7 @@ export type TelephonyProviderName = z.infer<typeof TelephonyProviderNameSchema>;
 export const RealtimeProviderNameSchema = z.enum([
   "xai-voice-agent",
   "gemini-live",
+  "openai-realtime",
   "mock",
 ]);
 export type RealtimeProviderName = z.infer<typeof RealtimeProviderNameSchema>;

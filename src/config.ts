@@ -177,6 +177,25 @@ export const GeminiLiveConfigSchema = z
   });
 export type GeminiLiveConfig = z.infer<typeof GeminiLiveConfigSchema>;
 
+export const OpenAIRealtimeConfigSchema = z
+  .object({
+    apiKey: z.string().min(1).optional(),
+    model: z.string().min(1).default("gpt-realtime-mini"),
+    voice: z.string().min(1).default("verse"),
+    inputTranscription: z.boolean().default(true),
+    // OpenAI Realtime currently rejects session.output_audio_transcription in session.update,
+    // so default to false until supported.
+    outputTranscription: z.boolean().default(false),
+  })
+  .strict()
+  .default({
+    model: "gpt-realtime-mini",
+    voice: "verse",
+    inputTranscription: true,
+    outputTranscription: false,
+  });
+export type OpenAIRealtimeConfig = z.infer<typeof OpenAIRealtimeConfigSchema>;
+
 export const MockRealtimeConfigSchema = z
   .object({
     enabled: z.boolean().default(false),
@@ -188,11 +207,12 @@ export type MockRealtimeConfig = z.infer<typeof MockRealtimeConfigSchema>;
 export const RealtimeConfigSchema = z
   .object({
     provider: z
-      .enum(["xai-voice-agent", "gemini-live", "mock"])
+      .enum(["xai-voice-agent", "gemini-live", "openai-realtime", "mock"])
       .default("xai-voice-agent"),
     streamPath: z.string().min(1).default("/voice/stream"),
     xai: XaiVoiceAgentConfigSchema.optional(),
     gemini: GeminiLiveConfigSchema.optional(),
+    openai: OpenAIRealtimeConfigSchema.optional(),
     mock: MockRealtimeConfigSchema.optional(),
   })
   .strict()
@@ -395,6 +415,14 @@ export function validateVoiceCallWsConfig(config: VoiceCallWsConfig): {
     if (!apiKey) {
       errors.push(
         "plugins.entries.voice-call-ws.config.realtime.gemini.apiKey is required (or set GEMINI_API_KEY/GOOGLE_API_KEY env)",
+      );
+    }
+  }
+  if (config.realtime.provider === "openai-realtime") {
+    const apiKey = config.realtime.openai?.apiKey ?? process.env.OPENAI_API_KEY;
+    if (!apiKey) {
+      errors.push(
+        "plugins.entries.voice-call-ws.config.realtime.openai.apiKey is required (or set OPENAI_API_KEY env)",
       );
     }
   }
