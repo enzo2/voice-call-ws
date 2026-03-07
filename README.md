@@ -1,4 +1,4 @@
-# @clawdbot/voice-call-ws
+# @openclaw/voice-call-ws
 
 Voice Call WebSocket extension for **OpenClaw**.
 
@@ -8,16 +8,15 @@ Telephony:
 Realtime providers:
 - **xAI Voice Agent** (default)
 - **Gemini Live**
+- **OpenAI Realtime**
 - **Mock realtime** (local dev)
-
-Docs: Refer to your OpenClaw plugin/extension docs for this plugin's config and install path.
 
 ## Install (local dev)
 
 ### Option A: install via OpenClaw (recommended)
 
 ```bash
-openclaw plugins install @clawdbot/voice-call-ws
+openclaw plugins install --link ~/.openclaw/extensions/voice-call-ws
 ```
 
 Restart the Gateway afterwards.
@@ -25,9 +24,9 @@ Restart the Gateway afterwards.
 ### Option B: copy into your global extensions folder (dev)
 
 ```bash
-mkdir -p ~/.clawdbot/extensions
-cp -R extensions/voice-call-ws ~/.clawdbot/extensions/voice-call-ws
-cd ~/.clawdbot/extensions/voice-call-ws && pnpm install
+mkdir -p ~/.openclaw/extensions
+cp -R extensions/voice-call-ws ~/.openclaw/extensions/voice-call-ws
+cd ~/.openclaw/extensions/voice-call-ws && pnpm install
 ```
 
 ## Config
@@ -84,8 +83,6 @@ Notes:
 - For Gemini Live, set `realtime.provider: "gemini-live"` and configure `realtime.gemini`.
 
 ## CLI
-
-If your CLI binary is still named `clawdbot`, substitute it below.
 
 ```bash
 openclaw voicecall-ws call --to "+15555550123" --message "Hello from OpenClaw"
