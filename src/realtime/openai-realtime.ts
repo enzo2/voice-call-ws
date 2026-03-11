@@ -433,6 +433,8 @@ export class OpenAIRealtimeProvider implements RealtimeProvider {
       case "response.function_call_arguments.done":
         this.handleFunctionCallDone(session, message);
         break;
+      case "response.output_item.added":
+      case "response.output_item.created":
       case "response.output_item.done":
         this.handleConversationItemCreated(session, message);
         break;

@@ -160,12 +160,22 @@ describe("OpenAIRealtimeProvider", () => {
     });
   });
 
-  it("emits function call from response.done output item", () => {
+  it("emits function call from response.output_item.added once before response.done", () => {
     const provider: any = makeProvider();
     const onFn = vi.fn();
     provider.onFunctionCall(onFn);
     const session: any = makeSession();
 
+    provider.handleMessage(session, {
+      type: "response.output_item.added",
+      item: {
+        type: "function_call",
+        name: "generate_horoscope",
+        call_id: "call_fc",
+        arguments: "{\"sign\":\"Aquarius\"}",
+      },
+      response_id: "resp_1",
+    });
     provider.handleMessage(session, {
       type: "response.done",
       response: {
